@@ -237,3 +237,49 @@ contida em uma função de comparação e uma varredura, ambas testáveis.
 **Custo de reversão.** Baixo para a escolha de largura — trocar `u32` por `u64`
 mexe em um tipo e apaga a varredura. Alto para a atribuição de ticks pelo
 schedule, que é por isso que está decidida agora.
+
+---
+
+## D11 — `Commands::spawn` não devolve `Entity` (ainda)
+
+**Decisão.** O command buffer da Fase 2 enfileira `spawn` sem devolver o
+identificador da entidade criada. A reserva de identificadores fica para quando
+o scheduler existir.
+
+### Por que não agora
+
+Para `spawn` devolver uma `Entity` utilizável na hora, o identificador precisa
+ser reservado antes da aplicação. Reservar sem `&mut World` — que a fila não
+tem, e não pode ter, já que é preenchida durante a iteração — exige um contador
+compartilhado.
+
+Um contador atômico é o caminho óbvio e reintroduz exatamente o problema da
+[D10](#d10--change-detection-modelo-de-ticks): com sistemas em paralelo, a ordem
+de reserva varia entre execuções, os identificadores gravados variam junto, e o
+estado deixa de ser reproduzível. Isso contradiz a D09 e o §15.
+
+### O desenho quando entrar
+
+O mesmo mecanismo que a D10 usa para os ticks: **faixas disjuntas atribuídas
+pela ordem determinística do schedule.**
+
+- Cada sistema recebe sua fila e uma faixa própria de índices de entidade,
+  atribuída a partir da posição do sistema na ordem total estável que o
+  scheduler já precisa calcular para decidir paralelismo.
+- Dentro da faixa, a reserva é um incremento local — sem átomo, sem
+  contenção entre threads.
+- `Entities` ganha um passo de materialização, que transforma os índices
+  reservados em entidades vivas na ordem das faixas. Índices reservados e não
+  usados são devolvidos.
+
+Custo zero em determinismo, porque a ordem das faixas é a ordem do schedule.
+
+### O que fazer enquanto isso
+
+Os casos que não precisam do identificador — despawn condicional, adicionar ou
+remover componente, criar entidade que nada referencia — são a maioria e já
+funcionam. Quando o identificador for necessário, `World::spawn` fora da
+iteração continua disponível.
+
+**Custo de reversão.** Baixo: acrescentar o retorno é aditivo, e nenhuma
+assinatura existente muda.

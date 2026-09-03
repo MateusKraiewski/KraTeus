@@ -92,7 +92,10 @@ qualidade travadas antes de haver código para consertar.
 - ✅ **Recursos globais:** dados únicos do mundo (tempo, gravidade, entrada),
   com espaço de identificadores próprio. `Access` passou a ter dois espaços
   separados — um componente `Posicao` e um recurso `Posicao` não conflitam.
-- ⬜ Mudanças estruturais diferidas por command buffer
+- ✅ **Command buffer:** `Commands` enfileira spawn/despawn/insert/remove e
+  operações sobre recursos, aplicadas na ordem de enfileiramento depois que o
+  empréstimo da query termina. `despawn` e `remove` não alocam. `spawn` ainda
+  não devolve `Entity` — ver [D11](DECISOES.md).
 - Job system: thread pool work-stealing, sem alocação no caminho quente
 - Scheduler: sistemas declaram acessos de leitura e escrita; o grafo de conflito
   é derivado dos tipos; executa em paralelo o que não colide, com ordem estável

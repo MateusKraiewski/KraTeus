@@ -28,14 +28,15 @@
 //! assert!(posicoes.contains(&(0.0, 0.0)));
 //! ```
 //!
-//! Estado: armazenamento e queries tipadas com filtros. Command buffer,
-//! recursos globais, job system e scheduler entram nos passos seguintes da
-//! Fase 2. Ver `docs/ROADMAP.md`.
+//! Estado: armazenamento, queries tipadas com filtros, recursos globais e
+//! command buffer. Change detection, job system e scheduler entram nos passos
+//! seguintes da Fase 2. Ver `docs/ROADMAP.md`.
 
 pub mod access;
 pub mod archetype;
 pub mod bundle;
 pub(crate) mod column;
+pub mod commands;
 pub mod component;
 pub mod entity;
 pub mod query;
@@ -45,6 +46,7 @@ pub mod world;
 pub use access::{Access, Conflict};
 pub use archetype::{Archetype, ArchetypeId, Archetypes};
 pub use bundle::Bundle;
+pub use commands::Commands;
 pub use component::{Component, ComponentId, ComponentInfo, Components};
 pub use entity::{Entities, Entity, EntityLocation};
 pub use query::{QueryData, QueryFilter, QueryIter, With, Without};

@@ -295,6 +295,9 @@ dependencies = [
 [[package]]
 name = "krateus-ecs"
 version = "0.1.0"
+dependencies = [
+ "tracing",
+]
 
 [[package]]
 name = "krateus-editor"

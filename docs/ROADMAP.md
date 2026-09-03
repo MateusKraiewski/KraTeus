@@ -71,15 +71,19 @@ qualidade travadas antes de haver código para consertar.
 
 ---
 
-## Fase 2 — ECS, jobs e loop de simulação
+## Fase 2 — ECS, jobs e loop de simulação 🚧
 
 **Objetivo.** O coração do §5. É a fase mais cara de errar (ver D02).
 
 **Entregáveis**
 
-- ECS archetype: entidade `(index, generation)`, storage SoA por archetype,
-  queries tipadas com filtros (`With`, `Without`, `Changed`), recursos globais,
-  mudanças estruturais diferidas por command buffer
+- ✅ **Armazenamento:** entidade `(index, generation)` com reciclagem LIFO
+  determinística, registro de componentes, coluna type-erased (SoA), archetypes
+  indexados por assinatura ordenada, `World` com spawn/despawn/get/insert/remove
+  e migração entre archetypes sem cópia pela pilha. 48 testes.
+- ⬜ Queries tipadas com filtros (`With`, `Without`, `Changed`)
+- ⬜ Recursos globais
+- ⬜ Mudanças estruturais diferidas por command buffer
 - Job system: thread pool work-stealing, sem alocação no caminho quente
 - Scheduler: sistemas declaram acessos de leitura e escrita; o grafo de conflito
   é derivado dos tipos; executa em paralelo o que não colide, com ordem estável

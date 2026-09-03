@@ -133,3 +133,107 @@ engine para resolver um problema que só aparece em lockstep cross-platform.
 **Risco.** Determinismo bit-exato entre Windows e Linux é frágil. Mitigação: o
 teste de determinismo cross-platform existe desde a Fase 2, quando ainda é
 barato consertar.
+
+---
+
+## D10 — Change detection: modelo de ticks
+
+**Decisão.** Definida antes de implementar `Changed<T>`, porque a escolha
+atravessa armazenamento, queries e scheduler ao mesmo tempo. Chegar nela depois
+significaria redesenhar os três.
+
+### Os três ticks
+
+| Tick | Onde vive | Quando é escrito |
+|---|---|---|
+| `added_tick` | por instância de componente | na inserção do componente |
+| `changed_tick` | por instância de componente | na inserção e a cada `&mut T` entregue |
+| `last_run_tick` | por sistema | ao fim de cada execução do sistema |
+
+`Changed<T>` passa quando `changed_tick` é mais recente que o `last_run_tick` do
+sistema que pergunta. `Added<T>`, quando `added_tick` é.
+
+**`&mut T` marca alterado mesmo sem alteração real.** Detectar mutação de fato
+exigiria comparar o valor antes e depois, o que custa mais do que o filtro
+economiza. O contrato é "foi exposto para escrita", não "mudou de valor", e a
+documentação da API precisa dizer isso — senão vira bug de expectativa.
+
+### Onde os ticks são guardados
+
+**Array paralelo por coluna, no `Archetype`** — não intercalados com os dados e
+não dentro de `Column`.
+
+Duas razões:
+
+- Intercalar `(valor, ticks)` destruiria o ganho de SoA. Um sistema que não
+  filtra por mudança passaria a arrastar 8 bytes de tick por componente para o
+  cache sem usar.
+- `Column` concentra todo o `unsafe` do ECS. Manter os ticks fora dela deixa
+  esse módulo intocado, e change detection vira código seguro.
+
+### Quando o tick global avança
+
+**Uma vez por execução de sistema**, não uma vez por passo de simulação.
+
+Por passo, dois sistemas que rodam no mesmo frame não conseguiriam se distinguir:
+um sistema não saberia dizer se a alteração veio do sistema anterior deste frame
+ou do frame passado. É justamente o caso de uso mais comum — reagir ao que outro
+sistema acabou de escrever.
+
+### O ponto que interage com o scheduler
+
+**O tick de cada sistema é atribuído pela ordem determinística do schedule, não
+por um contador atômico incrementado na hora em que o sistema começa.**
+
+Um contador atômico é o caminho óbvio e está errado para esta engine: com
+sistemas rodando em paralelo, a ordem de incremento varia entre execuções, os
+ticks gravados nos componentes variam junto, e o resultado de `Changed<T>` deixa
+de ser reproduzível — contradizendo a D09 e o §15.
+
+Como o scheduler já precisa de uma ordem total estável entre sistemas (para
+decidir paralelismo a partir do [`Access`]), essa mesma ordem serve para
+pré-atribuir os ticks. Custo zero, e o determinismo se mantém.
+
+### `Changed<T>` declara leitura de `T`
+
+O filtro lê a coluna de ticks de `T`. Um sistema que escreve `T` escreve esses
+ticks. Se o `Access` não registrasse a leitura, o scheduler poderia rodar os dois
+em paralelo e produzir uma corrida sobre os ticks.
+
+Portanto `Changed<T>` e `Added<T>` acrescentam `T` às leituras do `Access`,
+mesmo sem devolver o componente — ao contrário de `With<T>` e `Without<T>`, que
+só olham a assinatura do archetype e não declaram acesso nenhum.
+
+### Overflow
+
+**`u32` com comparação por diferença circular, mais varredura periódica de
+saneamento.**
+
+Comparar ticks com `>` quebra no wraparound. A comparação correta mede idade
+relativa ao tick atual:
+
+```text
+idade(t) = agora.wrapping_sub(t).min(IDADE_MAXIMA)
+mais_novo(t, last_run) = idade(last_run) > idade(t)
+```
+
+com `IDADE_MAXIMA = u32::MAX / 2`. Isso funciona enquanto nenhum tick guardado
+for mais velho que `IDADE_MAXIMA` — um componente que nunca é tocado acabaria
+violando isso.
+
+A varredura de saneamento resolve: periodicamente percorre os ticks armazenados
+e fixa em `agora - IDADE_MAXIMA` qualquer um mais velho que isso. Custo O(total
+de componentes), amortizado ao longo de centenas de milhares de ticks.
+
+**O gatilho da varredura é o contador de ticks, nunca tempo de relógio.** Um
+gatilho temporal faria a mesma simulação produzir estados diferentes em máquinas
+de velocidades diferentes, que é exatamente o que a D09 proíbe.
+
+**Alternativa considerada:** `u64`, que nunca estoura na prática e dispensa toda
+essa maquinaria. Descartada pelo custo de memória: com 1M de entidades e três
+componentes, os ticks passariam de 24 MB para 48 MB. A complexidade de `u32` fica
+contida em uma função de comparação e uma varredura, ambas testáveis.
+
+**Custo de reversão.** Baixo para a escolha de largura — trocar `u32` por `u64`
+mexe em um tipo e apaga a varredura. Alto para a atribuição de ticks pelo
+schedule, que é por isso que está decidida agora.

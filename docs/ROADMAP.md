@@ -89,7 +89,9 @@ qualidade travadas antes de haver código para consertar.
   spawn/despawn em regime permanente e iteração fragmentada em dois archetypes.
   Rodam no CI Linux ([R01](RISCOS.md)).
 - ⬜ Change detection (`Changed<T>`)
-- ⬜ Recursos globais
+- ✅ **Recursos globais:** dados únicos do mundo (tempo, gravidade, entrada),
+  com espaço de identificadores próprio. `Access` passou a ter dois espaços
+  separados — um componente `Posicao` e um recurso `Posicao` não conflitam.
 - ⬜ Mudanças estruturais diferidas por command buffer
 - Job system: thread pool work-stealing, sem alocação no caminho quente
 - Scheduler: sistemas declaram acessos de leitura e escrita; o grafo de conflito

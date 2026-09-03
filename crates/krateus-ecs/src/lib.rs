@@ -39,12 +39,14 @@ pub(crate) mod column;
 pub mod component;
 pub mod entity;
 pub mod query;
+pub mod resource;
 pub mod world;
 
-pub use access::Access;
+pub use access::{Access, Conflict};
 pub use archetype::{Archetype, ArchetypeId, Archetypes};
 pub use bundle::Bundle;
 pub use component::{Component, ComponentId, ComponentInfo, Components};
 pub use entity::{Entities, Entity, EntityLocation};
 pub use query::{QueryData, QueryFilter, QueryIter, With, Without};
+pub use resource::{Resource, ResourceId, Resources};
 pub use world::World;

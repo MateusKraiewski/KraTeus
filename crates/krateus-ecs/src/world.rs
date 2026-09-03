@@ -18,6 +18,7 @@ use crate::bundle::Bundle;
 use crate::component::{Component, ComponentId, Components};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::query::{QueryData, QueryFilter, QueryIter};
+use crate::resource::{Resource, Resources};
 
 /// Armazenamento de entidades e componentes.
 #[derive(Debug, Default)]
@@ -25,6 +26,7 @@ pub struct World {
     entities: Entities,
     archetypes: Archetypes,
     components: Components,
+    resources: Resources,
     /// Buffers reaproveitados entre chamadas para montar assinaturas sem
     /// alocar a cada `spawn` — a secao 11 do documento de visao pede
     /// explicitamente que nao se aloque por frame.
@@ -40,6 +42,7 @@ impl World {
             entities: Entities::new(),
             archetypes: Archetypes::new(),
             components: Components::new(),
+            resources: Resources::new(),
             decl: Vec::new(),
             sig: Vec::new(),
         }
@@ -259,6 +262,67 @@ impl World {
         // `move_row` percorreu o ramo de resgate exatamente uma vez e escreveu
         // um `T` valido em `saida`.
         Some(unsafe { saida.assume_init() })
+    }
+
+    /// Recursos do mundo.
+    #[inline]
+    #[must_use]
+    pub const fn resources(&self) -> &Resources {
+        &self.resources
+    }
+
+    /// Insere um recurso, devolvendo o valor anterior se havia um.
+    pub fn insert_resource<R: Resource>(&mut self, valor: R) -> Option<R> {
+        self.resources.insert(valor)
+    }
+
+    /// Remove um recurso e o devolve.
+    pub fn remove_resource<R: Resource>(&mut self) -> Option<R> {
+        self.resources.remove::<R>()
+    }
+
+    /// Indica se o recurso `R` tem valor presente.
+    #[must_use]
+    pub fn contains_resource<R: Resource>(&self) -> bool {
+        self.resources.contains::<R>()
+    }
+
+    /// Referencia ao recurso `R`, ou `None` se ele nao existe.
+    #[must_use]
+    pub fn get_resource<R: Resource>(&self) -> Option<&R> {
+        self.resources.get::<R>()
+    }
+
+    /// Referencia mutavel ao recurso `R`, ou `None` se ele nao existe.
+    pub fn get_resource_mut<R: Resource>(&mut self) -> Option<&mut R> {
+        self.resources.get_mut::<R>()
+    }
+
+    /// Referencia ao recurso `R`.
+    ///
+    /// Use quando a ausencia do recurso for erro de programacao, e nao um caso
+    /// a tratar — a mensagem do panic nomeia o tipo, o que custa muito menos
+    /// tempo de diagnostico do que um `unwrap` anonimo.
+    ///
+    /// # Panics
+    ///
+    /// Se o recurso nao tiver sido inserido.
+    #[must_use]
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.resources
+            .get::<R>()
+            .unwrap_or_else(|| panic!("recurso {} nao foi inserido", std::any::type_name::<R>()))
+    }
+
+    /// Referencia mutavel ao recurso `R`.
+    ///
+    /// # Panics
+    ///
+    /// Se o recurso nao tiver sido inserido.
+    pub fn resource_mut<R: Resource>(&mut self) -> &mut R {
+        self.resources
+            .get_mut::<R>()
+            .unwrap_or_else(|| panic!("recurso {} nao foi inserido", std::any::type_name::<R>()))
     }
 
     /// Percorre as entidades que tem todos os componentes pedidos por `D`.
@@ -541,6 +605,76 @@ mod tests {
     fn bundle_com_tipo_repetido_falha_alto() {
         let mut w = World::new();
         w.spawn((Posicao(0.0, 0.0), Posicao(1.0, 1.0)));
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Gravidade(f32);
+
+    #[test]
+    fn recurso_inserido_e_legivel() {
+        let mut w = World::new();
+        w.insert_resource(Gravidade(-9.81));
+
+        assert_eq!(w.resource::<Gravidade>(), &Gravidade(-9.81));
+        assert!(w.contains_resource::<Gravidade>());
+    }
+
+    #[test]
+    fn recurso_ausente_devolve_none_em_vez_de_entrar_em_panico() {
+        let w = World::new();
+        assert_eq!(w.get_resource::<Gravidade>(), None);
+        assert!(!w.contains_resource::<Gravidade>());
+    }
+
+    #[test]
+    #[should_panic(expected = "Gravidade")]
+    fn acessar_recurso_ausente_nomeia_o_tipo() {
+        let w = World::new();
+        let _ = w.resource::<Gravidade>();
+    }
+
+    #[test]
+    fn recurso_mutavel_persiste() {
+        let mut w = World::new();
+        w.insert_resource(Gravidade(0.0));
+        w.resource_mut::<Gravidade>().0 = -1.62;
+        assert_eq!(w.resource::<Gravidade>(), &Gravidade(-1.62));
+    }
+
+    #[test]
+    fn recurso_e_componente_do_mesmo_tipo_sao_independentes() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 2.0),));
+        w.insert_resource(Posicao(100.0, 200.0));
+
+        // Sao dois espacos distintos: mexer em um nao toca no outro.
+        assert_eq!(w.get::<Posicao>(e), Some(&Posicao(1.0, 2.0)));
+        assert_eq!(w.get_resource::<Posicao>(), Some(&Posicao(100.0, 200.0)));
+
+        w.resource_mut::<Posicao>().0 = 0.0;
+        assert_eq!(w.get::<Posicao>(e), Some(&Posicao(1.0, 2.0)));
+    }
+
+    #[test]
+    fn recursos_sobrevivem_a_operacoes_com_entidades() {
+        let mut w = World::new();
+        w.insert_resource(Gravidade(-9.81));
+
+        let e = w.spawn((Posicao(0.0, 0.0),));
+        w.insert(e, (Velocidade(1.0, 1.0),));
+        w.despawn(e);
+
+        assert_eq!(w.resource::<Gravidade>(), &Gravidade(-9.81));
+    }
+
+    #[test]
+    fn remover_recurso_devolve_o_valor() {
+        let mut w = World::new();
+        w.insert_resource(Gravidade(-9.81));
+
+        assert_eq!(w.remove_resource::<Gravidade>(), Some(Gravidade(-9.81)));
+        assert!(!w.contains_resource::<Gravidade>());
+        assert_eq!(w.remove_resource::<Gravidade>(), None);
     }
 
     #[test]

@@ -42,7 +42,7 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
-use crate::access::Access;
+use crate::access::{Access, Conflict};
 use crate::archetype::{Archetype, ArchetypeId, Archetypes};
 use crate::component::{Component, ComponentId, Components};
 use crate::entity::Entity;
@@ -157,7 +157,7 @@ unsafe impl<'w, T: Component> QueryData<'w> for &'w T {
     }
 
     fn access(state: &ComponentId, out: &mut Access) {
-        out.add_read(*state);
+        out.add_component_read(*state);
     }
 
     fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
@@ -191,7 +191,7 @@ unsafe impl<'w, T: Component> QueryData<'w> for &'w mut T {
     }
 
     fn access(state: &ComponentId, out: &mut Access) {
-        out.add_write(*state);
+        out.add_component_write(*state);
     }
 
     fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
@@ -360,8 +360,8 @@ impl<'w, D: QueryData<'w>, F: QueryFilter> QueryIter<'w, D, F> {
 
         let mut acesso = Access::new();
         D::access(&state, &mut acesso);
-        if let Some(conflito) = acesso.self_conflict() {
-            let nome = components.info(conflito).map_or("?", |i| i.name());
+        if let Some(Conflict::Component(id)) = acesso.self_conflict() {
+            let nome = components.info(id).map_or("?", |i| i.name());
             panic!("query pede o componente {nome} de forma conflitante consigo mesma");
         }
 

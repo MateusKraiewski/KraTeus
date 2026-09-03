@@ -94,7 +94,17 @@ irreversivel, e a Fase 2 nao a justifica.
 | `cargo bench` | ❌ bloqueado | `criterion` → `zerocopy`, `num-traits` |
 
 O laco local passa a ser **`cargo check` + `cargo fmt`**, com o CI Linux como
-autoridade sobre testes, clippy, `cargo-deny` e benchmarks. A cobertura nao e
+autoridade sobre testes, clippy, `cargo-deny` e benchmarks.
+
+**`cargo check` em debug nao basta.** O job de benchmark compila em release, onde
+`debug_assertions` esta desligado — codigo alcancado so por `cfg(debug_assertions)`
+some, e o que existia para ele vira codigo morto sob `-D warnings`. Isso ja
+reprovou um checkpoint. Antes de enviar, rodar tambem:
+
+```powershell
+cargo check --workspace --all-targets --all-features   # perfil dev
+cargo check --workspace --release --all-targets        # perfil de benchmark
+``` A cobertura nao e
 perdida — o que se perde e a latencia do feedback, que sai de segundos para o
 tempo de um push.
 

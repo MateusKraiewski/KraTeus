@@ -55,6 +55,17 @@ impl Column {
         }
     }
 
+    /// Numero de valores vivos.
+    ///
+    /// Existe exatamente onde ha quem a chame: em debug, por
+    /// `Archetype::debug_verifica_invariante`; nos testes, por este modulo.
+    /// Sem o `cfg`, seria codigo morto em release e o `-D warnings` do CI
+    /// reprovaria a compilacao — foi assim que o problema apareceu.
+    ///
+    /// A alternativa seria `allow(dead_code)`, que nao serve num modulo que
+    /// concentra todo o `unsafe` do ECS: ali, um aviso de codigo nao usado e
+    /// justamente o sinal que se quer ouvir.
+    #[cfg(any(debug_assertions, test))]
     #[inline]
     pub(crate) const fn len(&self) -> usize {
         self.len

@@ -57,6 +57,27 @@ benchmark, não como dependência do runtime.
 tipos evita que o usuário da engine tenha de ordenar sistemas à mão, e mantém a
 ordem de execução determinística (§15).
 
+### Revisão (Fase 2): fila compartilhada em vez de work-stealing, por ora
+
+O pool implementado usa uma **fila compartilhada com threads trabalhadoras**, e
+não deques com roubo de trabalho.
+
+Work-stealing paga em árvores de tarefas recursivas e desbalanceadas, onde uma
+thread termina cedo e precisa achar trabalho sozinha. A carga da Fase 2 é
+outra: a cada etapa, um conjunto **conhecido** de sistemas que não conflitam
+roda junto e o passo espera todos. Para fork-join sobre um lote conhecido, a
+fila compartilhada entrega o mesmo resultado.
+
+O que pesa contra antecipar o work-stealing: um deque lock-free correto é
+difícil de escrever e, pior, difícil de *testar* — bugs de ordenação de memória
+aparecem sob carga e em máquinas específicas. Trocar isso por complexidade
+verificável, sem benchmark que mostre ganho, contraria o §19.
+
+**Gatilho de reavaliação.** Quando existir paralelismo aninhado — um sistema que
+divide o próprio trabalho em pedaços, como `par_iter` sobre chunks de um
+archetype nas Fases 4 e 5. Aí o desbalanceamento vira real e a comparação passa
+a ter o que medir.
+
 ---
 
 ## D04 — Física: própria no núcleo, com costura para backend externo

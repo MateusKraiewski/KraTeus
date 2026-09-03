@@ -11,6 +11,7 @@
 pub mod config;
 pub mod error;
 pub mod handle;
+pub mod jobs;
 pub mod log;
 pub mod pool;
 pub mod time;
@@ -19,6 +20,7 @@ pub mod time;
 pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::handle::Handle;
+    pub use crate::jobs::JobPool;
     pub use crate::pool::Pool;
     pub use crate::time::{Clock, Time};
 }

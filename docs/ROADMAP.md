@@ -96,7 +96,10 @@ qualidade travadas antes de haver código para consertar.
   operações sobre recursos, aplicadas na ordem de enfileiramento depois que o
   empréstimo da query termina. `despawn` e `remove` não alocam. `spawn` ainda
   não devolve `Entity` — ver [D11](DECISOES.md).
-- Job system: thread pool work-stealing, sem alocação no caminho quente
+- ✅ **Job system:** `JobPool` em `krateus-core` — fila compartilhada, escopo
+  com empréstimo da pilha, thread chamadora participa, pânico capturado e
+  relançado na dona do escopo. Work-stealing adiado com gatilho registrado na
+  [D03](DECISOES.md).
 - Scheduler: sistemas declaram acessos de leitura e escrita; o grafo de conflito
   é derivado dos tipos; executa em paralelo o que não colide, com ordem estável
   e determinística

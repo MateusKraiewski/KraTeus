@@ -7,6 +7,13 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# Os benchmarks vivem em benches/pool.rs, sob o harness do Criterion. Sem isto,
+# `cargo bench` sem `--bench` tambem seleciona o harness libtest da biblioteca,
+# que recebe as flags do Criterion e falha. Desligar aqui torna o comportamento
+# seguro mesmo que o comando do CI seja simplificado depois.
+[lib]
+bench = false
+
 [lints]
 workspace = true
 

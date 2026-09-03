@@ -1,6 +1,11 @@
 //! Baseline do `Pool`. Existe para que a Fase 2 tenha com o que comparar.
 //!
-//! Executar com: `cargo bench -p krateus-core`
+//! Executar com: `cargo bench -p krateus-core --features bench`
+
+// `criterion_group!` expande para uma funcao publica sem documentacao, e o
+// workspace trata `missing_docs` como erro. Documentar codigo gerado por macro
+// nao e possivel, e um alvo de benchmark nao tem API publica para documentar.
+#![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use krateus_core::prelude::*;

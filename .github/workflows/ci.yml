@@ -46,7 +46,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo bench -p krateus-core --features bench -- --warm-up-time 1 --measurement-time 3
+      # `--bench pool` e obrigatorio: sem ele, o cargo tambem constroi o harness
+      # padrao do alvo --lib, que e libtest e nao entende as flags do Criterion.
+      - run: cargo bench -p krateus-core --bench pool --features bench -- --warm-up-time 0.1 --measurement-time 0.1 --sample-size 10
 
   # Build e teste nas duas plataformas. Linux nao e alvo de release (ver D07),
   # existe para impedir dependencia acidental de Windows, para servir de segunda

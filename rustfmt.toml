@@ -1,0 +1,8 @@
+edition = "2024"
+max_width = 100
+use_field_init_shorthand = true
+
+# Permite que struct literals e chamadas ocupem a largura total antes de quebrar.
+# Sem isto, o padrao quebra qualquer struct literal acima de 18 colunas, o que
+# espalha construcoes curtas por cinco linhas.
+use_small_heuristics = "Max"

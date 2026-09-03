@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Formatacao e lint rodam uma vez so: nao dependem de plataforma.
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  # Licencas e procedencia das dependencias. Roda so no CI: instalar
+  # cargo-deny na maquina de desenvolvimento esbarra no R01.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  # Benchmarks. O criterion nao compila na maquina de desenvolvimento por causa
+  # do R01, entao este job e a unica verificacao de que o harness continua
+  # valido. Compila e executa uma amostragem curta: o objetivo aqui e detectar
+  # quebra do harness, nao produzir numero comparavel — medicao de regressao
+  # entra na Fase 7, com hardware estavel.
+  bench:
+    name: benchmarks (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench -p krateus-core --features bench -- --warm-up-time 1 --measurement-time 3
+
+  # Build e teste nas duas plataformas. Linux nao e alvo de release (ver D07),
+  # existe para impedir dependencia acidental de Windows, para servir de segunda
+  # plataforma nos testes de determinismo a partir da Fase 2, e — enquanto o R01
+  # estiver aberto — para rodar o que a maquina local nao consegue rodar.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+
+  # As regras da secao 19 do documento de visao como verificacao executavel,
+  # nao como intencao. Ver a tabela no fim de docs/ROADMAP.md.
+  architecture:
+    name: regras de arquitetura
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nenhuma API grafica fora do backend de RHI
+        run: |
+          if grep -rnE '\b(wgpu|ash)::' crates/ \
+               --include='*.rs' \
+               --exclude-dir=krateus-rhi-wgpu; then
+            echo "::error::API grafica referenciada fora da crate de backend (D01)."
+            exit 1
+          fi
+          echo "ok: renderer isolado da API grafica"
+
+      - name: Core nao depende de outras crates da engine
+        run: |
+          if grep -nE '^krateus-(?!core)' crates/krateus-core/Cargo.toml -P; then
+            echo "::error::krateus-core deve ser folha no grafo de dependencias."
+            exit 1
+          fi
+          echo "ok: krateus-core e folha"
+
+      - name: Render nao depende de simulation
+        run: |
+          if grep -nE '^krateus-simulation' crates/krateus-render/Cargo.toml; then
+            echo "::error::A costura entre simulacao e render e o Render World (secao 10)."
+            exit 1
+          fi
+          echo "ok: render desacoplado da simulacao"

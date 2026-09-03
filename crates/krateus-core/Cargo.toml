@@ -1,0 +1,34 @@
+[package]
+name = "krateus-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# O criterion fica atras de feature, e nao como dev-dependency, de proposito:
+# ele puxa `zerocopy`, cujo build script e bloqueado pelo Smart App Control
+# (R01). Como dev-dependency, quebraria `cargo test` local. Assim, o fluxo
+# local segue funcionando e o CI Linux roda os benchmarks com --features bench.
+[dependencies.criterion]
+workspace = true
+optional = true
+
+[features]
+bench = ["dep:criterion"]
+
+[[bench]]
+name = "pool"
+harness = false
+required-features = ["bench"]

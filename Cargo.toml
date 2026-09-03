@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["Mateus Kraiewski"]
+repository = "https://github.com/mateuskraiewski/krateus"
+
+# Dependencias internas declaradas uma vez. As crates consomem com
+# `krateus-core.workspace = true`, o que mantem o grafo de dependencia
+# auditavel a partir de um unico lugar (ver docs/ROADMAP.md, secao final).
+[workspace.dependencies]
+krateus-core = { path = "crates/krateus-core" }
+krateus-ecs = { path = "crates/krateus-ecs" }
+krateus-simulation = { path = "crates/krateus-simulation" }
+krateus-physics = { path = "crates/krateus-physics" }
+krateus-rhi = { path = "crates/krateus-rhi" }
+krateus-rhi-wgpu = { path = "crates/krateus-rhi-wgpu" }
+krateus-render = { path = "crates/krateus-render" }
+krateus-world = { path = "crates/krateus-world" }
+krateus-navigation = { path = "crates/krateus-navigation" }
+krateus-audio = { path = "crates/krateus-audio" }
+krateus-networking = { path = "crates/krateus-networking" }
+krateus-assets = { path = "crates/krateus-assets" }
+krateus-editor = { path = "crates/krateus-editor" }
+
+# Dependencias externas. Versao unica para todo o workspace.
+glam = "0.30"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+criterion = "0.5"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Alocacao e clone acidental sao o inimigo direto do secao 11 do documento
+# de visao. Ficam como aviso ate existir codigo quente de verdade.
+undocumented_unsafe_blocks = "warn"
+todo = "warn"
+
+# Perfil de desenvolvimento: a engine roda cedo demais para ser usavel em
+# debug puro. Dependencias otimizadas, codigo proprio nao, para manter o
+# tempo de compilacao baixo sem que a simulacao fique inutilizavel.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# Perfil dedicado a benchmark e profiling: release com simbolos.
+[profile.profiling]
+inherits = "release"
+debug = true
+panic = "unwind"

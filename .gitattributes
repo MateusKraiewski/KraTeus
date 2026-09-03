@@ -1,0 +1,8 @@
+# Normaliza fim de linha: o repositorio guarda LF, o checkout local usa o
+# padrao da plataforma. Evita que a mesma linha apareca como alterada entre a
+# maquina Windows e o CI Linux.
+* text=auto eol=lf
+
+*.pdf binary
+*.png binary
+*.ktz binary

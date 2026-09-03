@@ -1,0 +1,29 @@
+# --- Artefatos de build ---
+/target/
+**/*.rs.bk
+*.pdb
+
+# --- Configuracao local de maquina ---
+# .cargo/config.toml aponta o target/ para dentro do perfil do usuario, para
+# contornar o bloqueio do Smart App Control. E especifico desta maquina.
+# Ver docs/AMBIENTE.md e o risco R01 em docs/RISCOS.md.
+/.cargo/
+
+# --- Saida da pipeline de assets (Fase 6) ---
+# Artefatos derivados sao reconstruiveis a partir das fontes; nunca versionados.
+/assets/cooked/
+*.ktz
+
+# --- Profiling e benchmarks (Fases 2 e 7) ---
+/profiling/
+*.trace
+criterion/
+
+# --- Editores ---
+.vscode/
+.idea/
+*.swp
+
+# --- Sistema ---
+Thumbs.db
+.DS_Store

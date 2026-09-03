@@ -67,29 +67,35 @@ impl<T> Copy for ColumnBase<'_, T> {}
 ///
 /// Implementado para [`Entity`], `&T`, `&mut T` e tuplas de ate 8 desses.
 ///
-/// O tempo de vida `'w` fica no trait, e nao nos metodos. Com ele nos metodos,
-/// seria early-bound na declaracao — por causa do bound implicito que o Rust
-/// adiciona a um tipo associado generico — e late-bound em cada implementacao,
-/// que normaliza a projecao para um tipo concreto. O resultado seria E0195 em
-/// todo `impl`.
+/// O tempo de vida do mundo aparece como parametro dos tipos associados
+/// [`Item`](QueryData::Item) e [`Fetch`](QueryData::Fetch), e nao do proprio
+/// trait. Isso deixa [`State`](QueryData::State) livre de tempo de vida, que e
+/// o que permite a um sistema guardar o estado da sua query entre execucoes.
+///
+/// Nas implementacoes, as assinaturas de `init_fetch` e `fetch` precisam usar a
+/// **forma projetada** — `Self::Fetch<'w>`, `Self::Item<'w>` — e nunca o tipo
+/// concreto equivalente. Escrever o tipo concreto normaliza a projecao, muda o
+/// `'w` de early-bound para late-bound e produz `E0195` contra a declaracao do
+/// trait.
 ///
 /// # Safety
 ///
 /// Quem implementa precisa garantir que [`matches`](QueryData::matches) so
 /// aceite archetypes onde [`init_fetch`](QueryData::init_fetch) consiga obter
 /// todas as colunas, e que [`access`](QueryData::access) declare exatamente os
-/// componentes tocados — a checagem de autoconflito e, mais tarde, o scheduler
-/// confiam nessa declaracao para evitar aliasing.
-pub unsafe trait QueryData<'w> {
+/// componentes tocados — a checagem de autoconflito e o scheduler confiam nessa
+/// declaracao para evitar aliasing.
+pub unsafe trait QueryData {
     /// Valor entregue por entidade.
-    type Item;
-    /// Dados resolvidos uma vez por query.
-    type State: Send + Sync;
+    type Item<'w>;
+    /// Dados resolvidos uma vez por query. Sem tempo de vida, para poder ser
+    /// guardado por um sistema.
+    type State: Send + Sync + 'static;
     /// Ponteiros resolvidos uma vez por archetype.
     ///
     /// `Copy` porque e passado por valor a cada linha: sao ponteiros, e
     /// copia-los custa menos do que emprestar.
-    type Fetch: Copy;
+    type Fetch<'w>: Copy;
 
     /// Registra os componentes necessarios e devolve o estado da query.
     fn init_state(components: &mut Components) -> Self::State;
@@ -105,7 +111,7 @@ pub unsafe trait QueryData<'w> {
     /// # Safety
     ///
     /// `archetype` precisa ter sido aceito por [`matches`](QueryData::matches).
-    unsafe fn init_fetch(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch;
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w>;
 
     /// Le a linha `row`.
     ///
@@ -114,16 +120,16 @@ pub unsafe trait QueryData<'w> {
     /// `row` precisa ser menor que o numero de entidades do archetype passado a
     /// [`init_fetch`](QueryData::init_fetch), e a mesma linha nao pode ser lida
     /// duas vezes enquanto o item anterior existir, no caso de acesso mutavel.
-    unsafe fn fetch(fetch: Self::Fetch, row: usize) -> Self::Item;
+    unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w>;
 }
 
 // SAFETY: `Entity` nao acessa componente nenhum, entao casa com qualquer
 // archetype e nao declara acesso. As entidades vem da fatia do proprio
 // archetype, cujo comprimento e o mesmo usado para limitar `row`.
-unsafe impl<'w> QueryData<'w> for Entity {
-    type Item = Entity;
+unsafe impl QueryData for Entity {
+    type Item<'w> = Entity;
     type State = ();
-    type Fetch = &'w [Entity];
+    type Fetch<'w> = &'w [Entity];
 
     fn init_state(_: &mut Components) -> Self::State {}
 
@@ -133,11 +139,11 @@ unsafe impl<'w> QueryData<'w> for Entity {
         true
     }
 
-    unsafe fn init_fetch(_: &Self::State, archetype: &'w Archetype) -> Self::Fetch {
+    unsafe fn init_fetch<'w>(_: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
         archetype.entities()
     }
 
-    unsafe fn fetch(fetch: Self::Fetch, row: usize) -> Entity {
+    unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
         debug_assert!(row < fetch.len());
         // SAFETY: o contrato exige `row` dentro do archetype, e esta fatia tem
         // exatamente uma entrada por entidade dele.
@@ -147,10 +153,10 @@ unsafe impl<'w> QueryData<'w> for Entity {
 
 // SAFETY: `matches` exige a coluna de `T`, que `init_fetch` entao obtem sem
 // falhar. `access` declara leitura de `T`, e o item devolvido e compartilhado.
-unsafe impl<'w, T: Component> QueryData<'w> for &'w T {
-    type Item = &'w T;
+unsafe impl<T: Component> QueryData for &T {
+    type Item<'w> = &'w T;
     type State = ComponentId;
-    type Fetch = ColumnBase<'w, T>;
+    type Fetch<'w> = ColumnBase<'w, T>;
 
     fn init_state(components: &mut Components) -> ComponentId {
         components.register::<T>()
@@ -164,12 +170,12 @@ unsafe impl<'w, T: Component> QueryData<'w> for &'w T {
         archetype.contains(*state)
     }
 
-    unsafe fn init_fetch(state: &ComponentId, archetype: &'w Archetype) -> ColumnBase<'w, T> {
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
         let coluna = archetype.column(*state).expect("matches aceitou este archetype");
         ColumnBase { base: coluna.base().cast::<T>(), _marker: PhantomData }
     }
 
-    unsafe fn fetch(fetch: ColumnBase<'w, T>, row: usize) -> &'w T {
+    unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
         // SAFETY: `row` esta dentro da coluna pelo contrato, e o invariante 2
         // do `World` garante que essa posicao esta inicializada. A proveniencia
         // do ponteiro e a da alocacao da coluna.
@@ -181,10 +187,10 @@ unsafe impl<'w, T: Component> QueryData<'w> for &'w T {
 // devolvida vem de tres fatos: a query nasce de `&mut World`; `self_conflict`
 // rejeita pedir o mesmo componente duas vezes; e a iteracao visita cada linha
 // uma unica vez.
-unsafe impl<'w, T: Component> QueryData<'w> for &'w mut T {
-    type Item = &'w mut T;
+unsafe impl<T: Component> QueryData for &mut T {
+    type Item<'w> = &'w mut T;
     type State = ComponentId;
-    type Fetch = ColumnBase<'w, T>;
+    type Fetch<'w> = ColumnBase<'w, T>;
 
     fn init_state(components: &mut Components) -> ComponentId {
         components.register::<T>()
@@ -198,12 +204,12 @@ unsafe impl<'w, T: Component> QueryData<'w> for &'w mut T {
         archetype.contains(*state)
     }
 
-    unsafe fn init_fetch(state: &ComponentId, archetype: &'w Archetype) -> ColumnBase<'w, T> {
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
         let coluna = archetype.column(*state).expect("matches aceitou este archetype");
         ColumnBase { base: coluna.base().cast::<T>(), _marker: PhantomData }
     }
 
-    unsafe fn fetch(fetch: ColumnBase<'w, T>, row: usize) -> &'w mut T {
+    unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
         // SAFETY: ver o comentario da implementacao. Nenhuma outra referencia
         // viva alcanca esta linha desta coluna.
         unsafe { &mut *fetch.base.as_ptr().add(row) }
@@ -215,10 +221,10 @@ macro_rules! impl_query_data_tupla {
         // SAFETY: cada elemento cumpre o proprio contrato; a tupla apenas
         // encaminha `matches`, `access` e `fetch` para todos eles. `matches` so
         // aceita quando todos aceitam, entao todo `init_fetch` tem suas colunas.
-        unsafe impl<'w, $($D: QueryData<'w>),+> QueryData<'w> for ($($D,)+) {
-            type Item = ($($D::Item,)+);
+        unsafe impl<$($D: QueryData),+> QueryData for ($($D,)+) {
+            type Item<'w> = ($($D::Item<'w>,)+);
             type State = ($($D::State,)+);
-            type Fetch = ($($D::Fetch,)+);
+            type Fetch<'w> = ($($D::Fetch<'w>,)+);
 
             fn init_state(components: &mut Components) -> Self::State {
                 ($($D::init_state(components),)+)
@@ -232,12 +238,15 @@ macro_rules! impl_query_data_tupla {
                 $($D::matches(&state.$i, archetype))&&+
             }
 
-            unsafe fn init_fetch(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch {
+            unsafe fn init_fetch<'w>(
+                state: &Self::State,
+                archetype: &'w Archetype,
+            ) -> Self::Fetch<'w> {
                 // SAFETY: `matches` aceitou, logo aceitou para cada elemento.
                 unsafe { ($($D::init_fetch(&state.$i, archetype),)+) }
             }
 
-            unsafe fn fetch(fetch: Self::Fetch, row: usize) -> Self::Item {
+            unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
                 // SAFETY: `row` valido pelo contrato; a ausencia de conflito
                 // entre os elementos foi verificada na criacao da query.
                 unsafe { ($($D::fetch(fetch.$i, row),)+) }
@@ -336,19 +345,19 @@ impl_query_filter_tupla!((A, 0), (B, 1), (C, 2), (D, 3));
 /// A ordem e: archetypes na ordem de criacao, e dentro de cada um, linhas em
 /// ordem crescente. Estavel entre execucoes, como pede a secao 15 do documento
 /// de visao.
-pub struct QueryIter<'w, D: QueryData<'w>, F: QueryFilter = ()> {
+pub struct QueryIter<'w, D: QueryData, F: QueryFilter = ()> {
     archetypes: &'w Archetypes,
     state: D::State,
     correspondentes: Vec<ArchetypeId>,
     proximo: usize,
-    fetch: Option<D::Fetch>,
+    fetch: Option<D::Fetch<'w>>,
     row: usize,
     len: usize,
     restantes: usize,
     _filtro: PhantomData<fn() -> F>,
 }
 
-impl<'w, D: QueryData<'w>, F: QueryFilter> QueryIter<'w, D, F> {
+impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
     /// Monta a query, resolvendo os archetypes que casam.
     ///
     /// # Panics
@@ -388,8 +397,8 @@ impl<'w, D: QueryData<'w>, F: QueryFilter> QueryIter<'w, D, F> {
     }
 }
 
-impl<'w, D: QueryData<'w>, F: QueryFilter> Iterator for QueryIter<'w, D, F> {
-    type Item = D::Item;
+impl<'w, D: QueryData, F: QueryFilter> Iterator for QueryIter<'w, D, F> {
+    type Item = D::Item<'w>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -422,7 +431,7 @@ impl<'w, D: QueryData<'w>, F: QueryFilter> Iterator for QueryIter<'w, D, F> {
     }
 }
 
-impl<'w, D: QueryData<'w>, F: QueryFilter> ExactSizeIterator for QueryIter<'w, D, F> {}
+impl<D: QueryData, F: QueryFilter> ExactSizeIterator for QueryIter<'_, D, F> {}
 
 #[cfg(test)]
 mod tests {

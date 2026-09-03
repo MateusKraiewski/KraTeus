@@ -334,7 +334,7 @@ impl World {
     ///
     /// Se `D` pedir o mesmo componente de forma conflitante, como
     /// `(&mut T, &mut T)` ou `(&T, &mut T)`.
-    pub fn query<'w, D: QueryData<'w>>(&'w mut self) -> QueryIter<'w, D, ()> {
+    pub fn query<D: QueryData>(&mut self) -> QueryIter<'_, D, ()> {
         self.query_filtered::<D, ()>()
     }
 
@@ -343,9 +343,7 @@ impl World {
     /// # Panics
     ///
     /// Nas mesmas condicoes de [`query`](Self::query).
-    pub fn query_filtered<'w, D: QueryData<'w>, F: QueryFilter>(
-        &'w mut self,
-    ) -> QueryIter<'w, D, F> {
+    pub fn query_filtered<D: QueryData, F: QueryFilter>(&mut self) -> QueryIter<'_, D, F> {
         // Registrar os componentes da query antes de olhar os archetypes faz
         // com que um tipo ainda desconhecido passe a existir no registro. Assim
         // uma query sobre um componente que ninguem usou simplesmente nao casa

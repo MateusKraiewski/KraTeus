@@ -81,7 +81,14 @@ qualidade travadas antes de haver código para consertar.
   determinística, registro de componentes, coluna type-erased (SoA), archetypes
   indexados por assinatura ordenada, `World` com spawn/despawn/get/insert/remove
   e migração entre archetypes sem cópia pela pilha. 48 testes.
-- ⬜ Queries tipadas com filtros (`With`, `Without`, `Changed`)
+- ✅ **Queries tipadas:** `QueryData` para `Entity`, `&T`, `&mut T` e tuplas de
+  até 8; filtros `With` / `Without` combináveis. Seleção por archetype, não por
+  entidade. `Access` rejeita na construção uma query que conflitaria consigo
+  mesma — `(&T, &mut T)` vira panic, não comportamento indefinido.
+- ✅ **Benchmarks** `benches/ecs.rs` cobrindo o critério de 1M de entidades,
+  spawn/despawn em regime permanente e iteração fragmentada em dois archetypes.
+  Rodam no CI Linux ([R01](RISCOS.md)).
+- ⬜ Change detection (`Changed<T>`)
 - ⬜ Recursos globais
 - ⬜ Mudanças estruturais diferidas por command buffer
 - Job system: thread pool work-stealing, sem alocação no caminho quente

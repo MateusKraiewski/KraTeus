@@ -17,6 +17,7 @@ use crate::archetype::{ArchetypeId, Archetypes, move_row};
 use crate::bundle::Bundle;
 use crate::component::{Component, ComponentId, Components};
 use crate::entity::{Entities, Entity, EntityLocation};
+use crate::query::{QueryData, QueryFilter, QueryIter};
 
 /// Armazenamento de entidades e componentes.
 #[derive(Debug, Default)]
@@ -258,6 +259,40 @@ impl World {
         // `move_row` percorreu o ramo de resgate exatamente uma vez e escreveu
         // um `T` valido em `saida`.
         Some(unsafe { saida.assume_init() })
+    }
+
+    /// Percorre as entidades que tem todos os componentes pedidos por `D`.
+    ///
+    /// Exige `&mut self` mesmo quando `D` so le: e o emprestimo exclusivo que
+    /// sustenta a seguranca da iteracao, descrita em [`crate::query`].
+    ///
+    /// # Panics
+    ///
+    /// Se `D` pedir o mesmo componente de forma conflitante, como
+    /// `(&mut T, &mut T)` ou `(&T, &mut T)`.
+    pub fn query<'w, D: QueryData<'w>>(&'w mut self) -> QueryIter<'w, D, ()> {
+        self.query_filtered::<D, ()>()
+    }
+
+    /// Como [`query`](Self::query), restrito aos archetypes que passam por `F`.
+    ///
+    /// # Panics
+    ///
+    /// Nas mesmas condicoes de [`query`](Self::query).
+    pub fn query_filtered<'w, D: QueryData<'w>, F: QueryFilter>(
+        &'w mut self,
+    ) -> QueryIter<'w, D, F> {
+        // Registrar os componentes da query antes de olhar os archetypes faz
+        // com que um tipo ainda desconhecido passe a existir no registro. Assim
+        // uma query sobre um componente que ninguem usou simplesmente nao casa
+        // com nada, em vez de falhar.
+        //
+        // Os dois emprestimos sao de campos distintos: o mutavel de
+        // `components` termina dentro de `QueryIter::new`, e so o compartilhado
+        // de `archetypes` sobrevive junto com a query.
+        let components = &mut self.components;
+        let archetypes = &self.archetypes;
+        QueryIter::new(archetypes, components)
     }
 
     /// Reserva espaco para `n` entidades no archetype de uma assinatura ja

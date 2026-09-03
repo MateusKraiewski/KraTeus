@@ -15,3 +15,19 @@ workspace = true
 
 [dependencies]
 tracing.workspace = true
+
+# Mesmo arranjo de krateus-core: o criterion fica atras de feature, e nao como
+# dev-dependency, porque puxa `zerocopy` e `num-traits`, cujos build scripts o
+# Smart App Control bloqueia (R01). Como dev-dependency, quebraria o
+# `cargo test` local.
+[dependencies.criterion]
+workspace = true
+optional = true
+
+[features]
+bench = ["dep:criterion"]
+
+[[bench]]
+name = "ecs"
+harness = false
+required-features = ["bench"]

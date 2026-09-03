@@ -73,6 +73,19 @@ impl Column {
         self.cap
     }
 
+    /// Ponteiro para o inicio da coluna.
+    ///
+    /// O ponteiro devolvido carrega a proveniencia da alocacao, e nao a do
+    /// `&self` usado para le-lo: escrever atraves dele e legitimo mesmo tendo
+    /// partido de uma referencia compartilhada. E isso que permite a uma query
+    /// segurar `&Archetypes` e ainda assim entregar `&mut T`, desde que a
+    /// exclusividade seja garantida por outro meio — no caso, por a query so
+    /// poder nascer de um `&mut World`.
+    #[inline]
+    pub(crate) const fn base(&self) -> NonNull<u8> {
+        self.data
+    }
+
     /// Ponteiro para o slot `row`. Nao valida nada.
     ///
     /// # Safety

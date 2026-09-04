@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use crate::column::Column;
 use crate::component::{ComponentId, Components};
 use crate::entity::Entity;
+use crate::tick::{ComponentTicks, Tick};
 
 /// Identificador denso de um archetype dentro de um [`World`](crate::World).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -38,6 +39,18 @@ impl ArchetypeId {
     pub const fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// Reconstroi o identificador a partir do indice.
+    ///
+    /// # Panics
+    ///
+    /// Se o indice nao couber em `u32`.
+    #[inline]
+    #[must_use]
+    pub const fn from_index(i: usize) -> Self {
+        assert!(i <= u32::MAX as usize, "indice de archetype fora do espaco de u32");
+        Self(i as u32)
+    }
 }
 
 /// Conjunto de entidades que compartilham a mesma assinatura de componentes.
@@ -47,6 +60,11 @@ pub struct Archetype {
     /// Ordenada e sem duplicatas. Paralela a `columns`.
     components: Box<[ComponentId]>,
     columns: Box<[Column]>,
+    /// Paralelo a `columns`: um vetor de ticks por coluna, com uma entrada por
+    /// linha. Fica fora de `Column` de proposito — ver a D10. Manter aqui deixa
+    /// intocado o modulo que concentra o `unsafe`, e evita que quem nao filtra
+    /// por mudanca arraste os ticks para o cache.
+    ticks: Box<[Vec<ComponentTicks>]>,
     entities: Vec<Entity>,
 }
 
@@ -62,7 +80,8 @@ impl Archetype {
             })
             .collect();
 
-        Self { id, components, columns, entities: Vec::new() }
+        let ticks = (0..components.len()).map(|_| Vec::new()).collect();
+        Self { id, components, columns, ticks, entities: Vec::new() }
     }
 
     /// Identificador deste archetype.
@@ -152,6 +171,15 @@ impl Archetype {
                 self.id
             );
         }
+        #[cfg(debug_assertions)]
+        for coluna in &self.ticks {
+            debug_assert_eq!(
+                coluna.len(),
+                self.entities.len(),
+                "ticks dessincronizados das entidades no archetype {:?}",
+                self.id
+            );
+        }
     }
 
     /// Reserva a linha de uma entidade.
@@ -159,10 +187,56 @@ impl Archetype {
     /// Devolve o indice da linha. As colunas ficam com um valor a menos que as
     /// entidades ate que quem chamou escreva um valor em cada uma — obrigacao
     /// de quem chama, e a razao de este metodo ser interno ao crate.
-    pub(crate) fn allocate(&mut self, entity: Entity) -> usize {
+    pub(crate) fn allocate(&mut self, entity: Entity, tick: Tick) -> usize {
         let row = self.entities.len();
         self.entities.push(entity);
+        for coluna in &mut self.ticks {
+            coluna.push(ComponentTicks::novo(tick));
+        }
         row
+    }
+
+    /// Ticks do componente `id` na linha `row`.
+    #[must_use]
+    pub fn component_ticks(&self, id: ComponentId, row: usize) -> Option<ComponentTicks> {
+        let i = self.column_index(id)?;
+        self.ticks[i].get(row).copied()
+    }
+
+    /// Marca o componente `id` da linha `row` como exposto para escrita.
+    pub(crate) fn marcar_alterado(&mut self, id: ComponentId, row: usize, tick: Tick) {
+        if let Some(i) = self.column_index(id)
+            && let Some(t) = self.ticks[i].get_mut(row)
+        {
+            t.changed = tick;
+        }
+    }
+
+    /// Preserva o tick de insercao de um componente que ja existia.
+    ///
+    /// Usado por `World::insert` quando o valor e substituido: sobrescrever nao
+    /// faz o componente nascer de novo.
+    pub(crate) fn restaurar_added(&mut self, id: ComponentId, row: usize, added: Tick) {
+        if let Some(i) = self.column_index(id)
+            && let Some(t) = self.ticks[i].get_mut(row)
+        {
+            t.added = added;
+        }
+    }
+
+    /// Aplica a varredura de saneamento a todos os ticks guardados.
+    ///
+    /// Conta instancias de componente ajustadas, nao ticks individuais.
+    pub(crate) fn saneia_ticks(&mut self, agora: Tick) -> usize {
+        let mut ajustados = 0;
+        for coluna in &mut self.ticks {
+            for t in coluna.iter_mut() {
+                if t.saneia(agora) {
+                    ajustados += 1;
+                }
+            }
+        }
+        ajustados
     }
 
     /// Remove a linha `row`, destruindo os componentes dela.
@@ -173,6 +247,9 @@ impl Archetype {
     pub(crate) fn swap_remove(&mut self, row: usize) -> Option<Entity> {
         for coluna in &mut self.columns {
             coluna.swap_remove_drop(row);
+        }
+        for coluna in &mut self.ticks {
+            coluna.swap_remove(row);
         }
         self.entities.swap_remove(row);
         self.debug_verifica_invariante();
@@ -185,6 +262,9 @@ impl Archetype {
     pub(crate) fn reserve(&mut self, n: usize) {
         self.entities.reserve(n);
         for coluna in &mut self.columns {
+            coluna.reserve(n);
+        }
+        for coluna in &mut self.ticks {
             coluna.reserve(n);
         }
     }
@@ -207,11 +287,12 @@ pub(crate) fn move_row(
     destino: &mut Archetype,
     entity: Entity,
     pular: &[ComponentId],
+    tick: Tick,
     mut resgatar: impl FnMut(ComponentId) -> Option<*mut u8>,
 ) -> (usize, Option<Entity>) {
     debug_assert!(row < origem.entities.len());
 
-    let novo_row = destino.allocate(entity);
+    let novo_row = destino.allocate(entity, tick);
 
     // Percorre por indice: `origem.components[i]` copia o id e nao mantem
     // emprestimo, o que permite pegar `origem.columns[i]` mutavelmente logo em
@@ -222,6 +303,9 @@ pub(crate) fn move_row(
 
         if carrega {
             let j = destino.column_index(cid).expect("contains acabou de confirmar");
+            // Migrar de archetype nao e alterar o componente: os ticks vao
+            // junto com o valor.
+            destino.ticks[j][novo_row] = origem.ticks[i][row];
             // SAFETY: `push_uninit` devolve um slot nao inicializado com o
             // tamanho e o alinhamento do componente `cid`, e as duas colunas
             // guardam exatamente esse tipo. `swap_remove_move` escreve um valor
@@ -241,6 +325,9 @@ pub(crate) fn move_row(
         }
     }
 
+    for coluna in &mut origem.ticks {
+        coluna.swap_remove(row);
+    }
     origem.entities.swap_remove(row);
 
     origem.debug_verifica_invariante();
@@ -265,6 +352,7 @@ impl Archetypes {
             id: ArchetypeId::VAZIO,
             components: Box::new([]),
             columns: Box::new([]),
+            ticks: Box::new([]),
             entities: Vec::new(),
         };
 
@@ -448,7 +536,7 @@ mod tests {
         let g = NonZeroU32::new(1).unwrap();
         let entidades: Vec<_> = (0..3).map(|i| Entity::from_raw(i, g)).collect();
         for &e in &entidades {
-            let row = arch.allocate(e);
+            let row = arch.allocate(e, Tick::ZERO);
             arch.column_at_mut(0).push(row as u32);
         }
 

@@ -19,6 +19,7 @@ use crate::component::{Component, ComponentId, Components};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::query::{QueryData, QueryFilter, QueryIter};
 use crate::resource::{Resource, Resources};
+use crate::tick::{ComponentTicks, Tick};
 
 /// Armazenamento de entidades e componentes.
 #[derive(Debug, Default)]
@@ -32,6 +33,9 @@ pub struct World {
     /// explicitamente que nao se aloque por frame.
     decl: Vec<ComponentId>,
     sig: Vec<ComponentId>,
+    /// Instante logico corrente. Avanca uma vez por sistema executado; ver a
+    /// D10 em `docs/DECISOES.md`.
+    change_tick: Tick,
 }
 
 impl World {
@@ -45,6 +49,7 @@ impl World {
             resources: Resources::new(),
             decl: Vec::new(),
             sig: Vec::new(),
+            change_tick: Tick::ZERO,
         }
     }
 
@@ -98,6 +103,66 @@ impl World {
         &mut self.resources
     }
 
+    /// Instante logico corrente.
+    #[inline]
+    #[must_use]
+    pub const fn change_tick(&self) -> Tick {
+        self.change_tick
+    }
+
+    /// Avanca o instante logico e devolve o novo valor.
+    ///
+    /// Chamado pelo scheduler, uma vez por sistema executado.
+    pub const fn increment_change_tick(&mut self) -> Tick {
+        self.change_tick = self.change_tick.adiantado(1);
+        self.change_tick
+    }
+
+    /// Posiciona o instante logico. Usado pelo scheduler ao distribuir ticks.
+    pub const fn set_change_tick(&mut self, tick: Tick) {
+        self.change_tick = tick;
+    }
+
+    /// Ticks de insercao e alteracao do componente `T` da entidade.
+    #[must_use]
+    pub fn component_ticks<T: Component>(&self, entity: Entity) -> Option<ComponentTicks> {
+        let (cid, loc) = self.localiza_coluna::<T>(entity)?;
+        self.archetypes.get(loc.archetype)?.component_ticks(cid, loc.row as usize)
+    }
+
+    /// Indica se `T` foi inserido na entidade depois de `last_run`.
+    #[must_use]
+    pub fn is_added<T: Component>(&self, entity: Entity, last_run: Tick) -> bool {
+        self.component_ticks::<T>(entity).is_some_and(|t| t.is_added(last_run, self.change_tick))
+    }
+
+    /// Indica se `T` foi exposto para escrita depois de `last_run`.
+    #[must_use]
+    pub fn is_changed<T: Component>(&self, entity: Entity, last_run: Tick) -> bool {
+        self.component_ticks::<T>(entity).is_some_and(|t| t.is_changed(last_run, self.change_tick))
+    }
+
+    /// Puxa para a idade maxima todo tick velho demais para a comparacao
+    /// circular.
+    ///
+    /// Sem isso, um componente que passa muito tempo sem ser tocado volta a
+    /// parecer recente depois da virada do contador. O gatilho e a contagem de
+    /// ticks, nunca tempo de relogio: um gatilho temporal faria a mesma
+    /// simulacao divergir entre maquinas de velocidades diferentes (D09).
+    ///
+    /// Devolve quantas instancias de componente foram ajustadas — nao quantos
+    /// ticks, ja que `added` e `changed` de uma mesma instancia contam junto.
+    pub fn saneia_ticks(&mut self) -> usize {
+        let agora = self.change_tick;
+        let mut ajustados = 0;
+        for i in 0..self.archetypes.len() {
+            if let Some(arch) = self.archetypes.get_mut(ArchetypeId::from_index(i)) {
+                ajustados += arch.saneia_ticks(agora);
+            }
+        }
+        ajustados
+    }
+
     /// Indica se a entidade existe.
     #[inline]
     #[must_use]
@@ -119,8 +184,9 @@ impl World {
         assert_eq!(decl.len(), sig.len(), "bundle com componente repetido");
 
         let entity = self.entities.alloc();
+        let tick = self.change_tick;
         let arch = self.archetypes.get_mut(archetype).expect("archetype recem-obtido");
-        let row = arch.allocate(entity);
+        let row = arch.allocate(entity, tick);
 
         bundle.take(&mut |i, ptr| {
             let cid = decl[i];
@@ -175,9 +241,15 @@ impl World {
     }
 
     /// Referencia mutavel ao componente `T` da entidade.
+    ///
+    /// Marca o componente como alterado, mesmo que quem chamou nao escreva nada:
+    /// o contrato e "foi exposto para escrita" (ver D10).
     pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
         let (cid, loc) = self.localiza_coluna::<T>(entity)?;
-        let coluna = self.archetypes.get_mut(loc.archetype)?.column_mut(cid)?;
+        let tick = self.change_tick;
+        let arch = self.archetypes.get_mut(loc.archetype)?;
+        arch.marcar_alterado(cid, loc.row as usize, tick);
+        let coluna = arch.column_mut(cid)?;
         // SAFETY: mesmas condicoes de `get`; a exclusividade vem do `&mut self`.
         Some(unsafe { coluna.get_mut::<T>(loc.row as usize) })
     }
@@ -203,9 +275,17 @@ impl World {
         assert_eq!(decl.len(), sig.len(), "bundle com componente repetido");
 
         let atual = self.archetypes.get(loc.archetype).expect("archetype da entidade");
+        // Sobrescrever um componente nao o faz nascer de novo: o tick de
+        // insercao de quem ja existia precisa sobreviver a operacao.
+        let added_anteriores: Vec<(ComponentId, Tick)> = sig
+            .iter()
+            .filter_map(|&cid| Some((cid, atual.component_ticks(cid, loc.row as usize)?.added)))
+            .collect();
+
         let mut destino: Vec<ComponentId> = atual.component_ids().to_vec();
         destino.extend_from_slice(&sig);
         let destino = self.archetypes.get_or_insert(&mut destino, &self.components);
+        let tick = self.change_tick;
 
         if destino == loc.archetype {
             // Assinatura inalterada: todos os componentes do bundle ja existiam.
@@ -218,6 +298,9 @@ impl World {
                 // destruido por `replace_at`.
                 unsafe { coluna.replace_at(loc.row as usize, ptr) };
             });
+            for &cid in &sig {
+                arch.marcar_alterado(cid, loc.row as usize, tick);
+            }
             self.devolve_buffers(decl, sig);
             return true;
         }
@@ -226,7 +309,7 @@ impl World {
         // Os componentes do bundle nao sao carregados da origem: seriam
         // sobrescritos logo em seguida. Sao destruidos aqui e reescritos abaixo.
         let (novo_row, deslocada) =
-            move_row(origem, loc.row as usize, alvo, entity, &sig, |_| None);
+            move_row(origem, loc.row as usize, alvo, entity, &sig, tick, |_| None);
 
         bundle.take(&mut |i, ptr| {
             let coluna = alvo.column_mut(decl[i]).expect("coluna presente na assinatura");
@@ -234,6 +317,14 @@ impl World {
             // valor da nova linha justamente para que ele seja escrito aqui.
             unsafe { coluna.push_from(ptr) };
         });
+
+        // Componentes que ja existiam mantem seu tick de insercao; so os
+        // realmente novos nascem agora.
+        if let Some(alvo) = self.archetypes.get_mut(destino) {
+            for &(cid, added) in &added_anteriores {
+                alvo.restaurar_added(cid, novo_row, added);
+            }
+        }
 
         if let Some(d) = deslocada {
             self.entities.set_location(d, loc);
@@ -257,14 +348,16 @@ impl World {
         let destino = self.archetypes.get_or_insert(&mut destino, &self.components);
         debug_assert_ne!(destino, loc.archetype, "remover um componente muda a assinatura");
 
+        let tick = self.change_tick;
         let mut saida = std::mem::MaybeUninit::<T>::uninit();
         let (origem, alvo) = self.archetypes.get_pair_mut(loc.archetype, destino);
 
-        let (novo_row, deslocada) = move_row(origem, loc.row as usize, alvo, entity, &[], |c| {
-            // O destino nao tem `cid`, entao este e o unico componente que
-            // cai no ramo de resgate.
-            (c == cid).then(|| saida.as_mut_ptr().cast::<u8>())
-        });
+        let (novo_row, deslocada) =
+            move_row(origem, loc.row as usize, alvo, entity, &[], tick, |c| {
+                // O destino nao tem `cid`, entao este e o unico componente que
+                // cai no ramo de resgate.
+                (c == cid).then(|| saida.as_mut_ptr().cast::<u8>())
+            });
 
         if let Some(d) = deslocada {
             self.entities.set_location(d, loc);
@@ -411,6 +504,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::tick::Tick;
 
     #[derive(Debug, PartialEq)]
     struct Posicao(f32, f32);
@@ -688,6 +782,149 @@ mod tests {
         assert_eq!(w.remove_resource::<Gravidade>(), Some(Gravidade(-9.81)));
         assert!(!w.contains_resource::<Gravidade>());
         assert_eq!(w.remove_resource::<Gravidade>(), None);
+    }
+
+    // ---------------------------------------------------- deteccao de mudanca --
+
+    #[test]
+    fn componente_recem_criado_conta_como_adicionado() {
+        let mut w = World::new();
+        w.increment_change_tick();
+        let e = w.spawn((Posicao(0.0, 0.0),));
+
+        let t = w.component_ticks::<Posicao>(e).unwrap();
+        assert_eq!(t.added, w.change_tick());
+        assert_eq!(t.changed, t.added, "inserir tambem conta como alterar");
+        assert!(w.is_added::<Posicao>(e, Tick::ZERO));
+    }
+
+    #[test]
+    fn get_mut_marca_alterado_mesmo_sem_escrita() {
+        // O contrato da D10: "foi exposto para escrita", nao "mudou de valor".
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 1.0),));
+        let depois_do_spawn = w.change_tick();
+
+        w.increment_change_tick();
+        let _ = w.get_mut::<Posicao>(e);
+
+        assert!(w.is_changed::<Posicao>(e, depois_do_spawn));
+    }
+
+    #[test]
+    fn leitura_nao_marca_alterado() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 1.0),));
+        let depois_do_spawn = w.change_tick();
+
+        w.increment_change_tick();
+        let _ = w.get::<Posicao>(e);
+
+        assert!(!w.is_changed::<Posicao>(e, depois_do_spawn));
+    }
+
+    #[test]
+    fn migrar_de_archetype_nao_conta_como_alteracao() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 1.0),));
+        let ticks_originais = w.component_ticks::<Posicao>(e).unwrap();
+
+        w.increment_change_tick();
+        w.insert(e, (Velocidade(1.0, 1.0),));
+
+        assert_eq!(
+            w.component_ticks::<Posicao>(e).unwrap(),
+            ticks_originais,
+            "o componente foi carregado, nao tocado"
+        );
+        // O componente novo, esse sim, nasceu agora.
+        assert_eq!(w.component_ticks::<Velocidade>(e).unwrap().added, w.change_tick());
+    }
+
+    #[test]
+    fn sobrescrever_preserva_o_tick_de_insercao() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 1.0),));
+        let nascimento = w.component_ticks::<Posicao>(e).unwrap().added;
+
+        w.increment_change_tick();
+        w.insert(e, (Posicao(2.0, 2.0),));
+
+        let t = w.component_ticks::<Posicao>(e).unwrap();
+        assert_eq!(t.added, nascimento, "sobrescrever nao faz o componente nascer de novo");
+        assert_eq!(t.changed, w.change_tick());
+        assert!(!w.is_added::<Posicao>(e, nascimento));
+        assert!(w.is_changed::<Posicao>(e, nascimento));
+    }
+
+    #[test]
+    fn sobrescrever_com_migracao_tambem_preserva_o_added() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(1.0, 1.0),));
+        let nascimento = w.component_ticks::<Posicao>(e).unwrap().added;
+
+        w.increment_change_tick();
+        // Substitui Posicao e acrescenta Velocidade: muda de archetype.
+        w.insert(e, (Posicao(9.0, 9.0), Velocidade(1.0, 1.0)));
+
+        assert_eq!(w.component_ticks::<Posicao>(e).unwrap().added, nascimento);
+        assert_eq!(w.get::<Posicao>(e), Some(&Posicao(9.0, 9.0)));
+    }
+
+    #[test]
+    fn ticks_acompanham_a_entidade_deslocada_por_despawn() {
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0, 1.0),));
+        w.increment_change_tick();
+        let c = w.spawn((Posicao(3.0, 3.0),));
+        let ticks_de_c = w.component_ticks::<Posicao>(c).unwrap();
+
+        // `c` e trazido da ultima linha para a linha de `a`.
+        w.despawn(a);
+
+        assert_eq!(
+            w.component_ticks::<Posicao>(c).unwrap(),
+            ticks_de_c,
+            "o swap_remove precisa mover os ticks junto com os valores"
+        );
+    }
+
+    #[test]
+    fn saneamento_ajusta_tick_velho_demais() {
+        let mut w = World::new();
+        let e = w.spawn((Posicao(0.0, 0.0),));
+
+        // Salta o contador para muito depois do nascimento do componente.
+        w.set_change_tick(Tick::new(Tick::IDADE_MAXIMA + 1_000));
+        assert_eq!(w.saneia_ticks(), 1, "uma instancia de componente ajustada");
+
+        let t = w.component_ticks::<Posicao>(e).unwrap();
+        assert_eq!(t.added.idade(w.change_tick()), Tick::IDADE_MAXIMA);
+        assert_eq!(w.saneia_ticks(), 0, "a segunda varredura nao acha nada");
+    }
+
+    #[test]
+    fn ticks_sobrevivem_a_muitas_operacoes_estruturais() {
+        let mut w = World::new();
+        let mut ids = Vec::new();
+        for i in 0..200 {
+            w.increment_change_tick();
+            ids.push(w.spawn((Posicao(i as f32, 0.0),)));
+        }
+        for &e in ids.iter().step_by(3) {
+            w.despawn(e);
+        }
+        for &e in ids.iter().skip(1).step_by(3) {
+            w.insert(e, (Velocidade(1.0, 1.0),));
+        }
+
+        // Toda entidade viva ainda tem ticks consistentes.
+        for &e in &ids {
+            if w.contains(e) {
+                let t = w.component_ticks::<Posicao>(e).expect("posicao presente");
+                assert!(t.added.get() > 0, "tick de insercao perdido");
+            }
+        }
     }
 
     #[test]

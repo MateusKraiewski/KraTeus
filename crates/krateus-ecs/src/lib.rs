@@ -43,6 +43,7 @@ pub mod query;
 pub mod resource;
 pub mod schedule;
 pub mod system;
+pub mod tick;
 pub mod world;
 pub mod world_cell;
 
@@ -58,5 +59,6 @@ pub use schedule::Schedule;
 pub use system::{
     FunctionSystem, IntoSystem, Res, ResMut, System, SystemParam, SystemParamFunction,
 };
+pub use tick::{ComponentTicks, SystemTicks, Tick};
 pub use world::World;
 pub use world_cell::WorldCell;

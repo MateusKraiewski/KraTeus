@@ -90,7 +90,7 @@ irreversivel, e a Fase 2 nao a justifica.
 | `cargo fmt` | ✅ confiavel | |
 | `cargo run --example` | ⚠️ intermitente | Funciona ate o SAC decidir o contrario |
 | `cargo test` | ❌ nao confiavel | Ver ponto 3 acima |
-| `cargo clippy` | ❌ bloqueado | |
+| `cargo clippy` | ⚠️ intermitente | Bloqueado por longos períodos; voltou a rodar em 2026-09-04. Tentar antes de enviar |
 | `cargo bench` | ❌ bloqueado | `criterion` → `zerocopy`, `num-traits` |
 
 O laco local passa a ser **`cargo check` + `cargo fmt`**, com o CI Linux como
@@ -102,9 +102,16 @@ some, e o que existia para ele vira codigo morto sob `-D warnings`. Isso ja
 reprovou um checkpoint. Antes de enviar, rodar tambem:
 
 ```powershell
-cargo check --workspace --all-targets --all-features   # perfil dev
-cargo check --workspace --release --all-targets        # perfil de benchmark
-``` A cobertura nao e
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features   # quando o SAC deixar
+cargo check --workspace --all-targets --all-features    # perfil dev
+cargo check --workspace --release --all-targets --all-features   # perfil de benchmark
+```
+
+**`cargo check` não substitui `cargo clippy`.** Lints como `mut_from_ref` e
+`undocumented_unsafe_blocks` só existem no clippy, e já reprovaram um
+checkpoint que passava no `check`. Quando o clippy estiver executável — e ele
+oscila —, rodá-lo antes de enviar economiza um ciclo de CI. A cobertura nao e
 perdida — o que se perde e a latencia do feedback, que sai de segundos para o
 tempo de um push.
 

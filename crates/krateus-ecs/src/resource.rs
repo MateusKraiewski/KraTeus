@@ -14,6 +14,7 @@ use std::any::{Any, TypeId, type_name};
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::ptr::NonNull;
 
 /// Tipo que pode ser guardado como recurso.
 ///
@@ -171,25 +172,31 @@ impl Resources {
         self.slots[id.index()].as_mut()?.get_mut().downcast_mut::<R>()
     }
 
-    /// Referencia mutavel ao valor de `R` a partir de `&self`.
+    /// Ponteiro para o valor de `R`, obtido a partir de `&self`.
     ///
     /// Existe para o scheduler: dois sistemas que escrevem recursos distintos
     /// rodam em paralelo segurando apenas `&Resources`, e a disjuncao entre eles
     /// e provada pelo [`Access`](crate::Access), nao pelo compilador.
     ///
+    /// Devolve **ponteiro e nao referencia** de proposito. Um `&mut R` afirma
+    /// exclusividade, e esta funcao nao tem como sustentar essa afirmacao — quem
+    /// a sustenta e quem conhece o `Access`. Devolver ponteiro deixa a asercao
+    /// no ponto onde ela pode ser justificada.
+    ///
     /// # Safety
     ///
-    /// Enquanto a referencia devolvida existir, nenhum outro acesso ao recurso
-    /// `R` — leitura ou escrita, por esta ou por outra thread — pode estar
-    /// ativo. Recursos de tipos diferentes ocupam slots independentes e nao se
+    /// O slot precisa nao estar sendo acessado por mais ninguem no momento da
+    /// chamada. Recursos de tipos diferentes ocupam slots independentes e nao se
     /// afetam.
-    pub(crate) unsafe fn get_unchecked_mut<R: Resource>(&self) -> Option<&mut R> {
+    pub(crate) unsafe fn get_ptr<R: Resource>(&self) -> Option<NonNull<R>> {
         let id = self.id::<R>()?;
         let celula = self.slots[id.index()].as_ref()?;
-        // SAFETY: o contrato acima transfere para quem chama a garantia de que
-        // este slot nao esta sendo acessado por mais ninguem. `UnsafeCell::get`
-        // devolve um ponteiro legitimamente mutavel a partir de `&self`.
-        unsafe { &mut *celula.get() }.downcast_mut::<R>()
+
+        // SAFETY: o contrato transfere para quem chama a garantia de que este
+        // slot esta livre. A referencia criada aqui serve apenas para resolver o
+        // downcast e nao sobrevive a chamada: vira ponteiro na linha seguinte.
+        let valor = unsafe { &mut *celula.get() }.downcast_mut::<R>()?;
+        Some(NonNull::from(valor))
     }
 
     /// Itera sobre os recursos registrados, em ordem de registro.

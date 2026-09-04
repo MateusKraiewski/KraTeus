@@ -103,7 +103,7 @@ pub unsafe trait SystemParam {
 
 // SAFETY: a fila nao toca no mundo durante a execucao; o que ela enfileira e
 // aplicado depois, sequencialmente. Por isso nao declara acesso nenhum.
-unsafe impl<'a> SystemParam for &'a mut Commands {
+unsafe impl SystemParam for &mut Commands {
     type State = Commands;
     type Item<'w, 's> = &'s mut Commands;
 
@@ -212,12 +212,21 @@ unsafe impl<'a, R: Resource> SystemParam for ResMut<'a, R> {
     }
 
     unsafe fn fetch<'w, 's>(_: &'s mut Self::State, world: WorldCell<'w>) -> Self::Item<'w, 's> {
-        // SAFETY: o contrato garante exclusividade sobre `R`.
+        // SAFETY: o contrato de `fetch` garante que nada conflitante com o
+        // acesso declarado esta ativo.
         let mundo = unsafe { world.world() };
-        let valor = unsafe { mundo.resources().get_unchecked_mut::<R>() }.unwrap_or_else(|| {
+
+        // SAFETY: o mesmo contrato garante que este recurso nao esta sendo
+        // acessado por mais ninguem — foi essa a condicao para o scheduler
+        // deixar este sistema rodar agora.
+        let ptr = unsafe { mundo.resources().get_ptr::<R>() }.unwrap_or_else(|| {
             panic!("sistema pede ResMut<{}>, que nao foi inserido", std::any::type_name::<R>())
         });
-        ResMut { valor }
+
+        // SAFETY: o ponteiro veio do slot vivo de `R` e a exclusividade e a
+        // condicao acima. E aqui, e nao dentro de `get_ptr`, que a afirmacao de
+        // acesso exclusivo pode ser sustentada.
+        ResMut { valor: unsafe { &mut *ptr.as_ptr() } }
     }
 }
 

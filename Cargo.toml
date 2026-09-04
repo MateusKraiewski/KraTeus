@@ -10,23 +10,26 @@ license = "MIT OR Apache-2.0"
 authors = ["Mateus Kraiewski"]
 repository = "https://github.com/mateuskraiewski/krateus"
 
-# Dependencias internas declaradas uma vez. As crates consomem com
+# Dependencias internas declaradas uma vez. A `version` acompanha o `path`
+# porque uma dependencia de caminho sem versao conta como wildcard para o
+# cargo-deny — e, se um dia alguma crate for publicada, e a versao que o
+# registro usa. As crates consomem com
 # `krateus-core.workspace = true`, o que mantem o grafo de dependencia
 # auditavel a partir de um unico lugar (ver docs/ROADMAP.md, secao final).
 [workspace.dependencies]
-krateus-core = { path = "crates/krateus-core" }
-krateus-ecs = { path = "crates/krateus-ecs" }
-krateus-simulation = { path = "crates/krateus-simulation" }
-krateus-physics = { path = "crates/krateus-physics" }
-krateus-rhi = { path = "crates/krateus-rhi" }
-krateus-rhi-wgpu = { path = "crates/krateus-rhi-wgpu" }
-krateus-render = { path = "crates/krateus-render" }
-krateus-world = { path = "crates/krateus-world" }
-krateus-navigation = { path = "crates/krateus-navigation" }
-krateus-audio = { path = "crates/krateus-audio" }
-krateus-networking = { path = "crates/krateus-networking" }
-krateus-assets = { path = "crates/krateus-assets" }
-krateus-editor = { path = "crates/krateus-editor" }
+krateus-core = { path = "crates/krateus-core", version = "0.1.0" }
+krateus-ecs = { path = "crates/krateus-ecs", version = "0.1.0" }
+krateus-simulation = { path = "crates/krateus-simulation", version = "0.1.0" }
+krateus-physics = { path = "crates/krateus-physics", version = "0.1.0" }
+krateus-rhi = { path = "crates/krateus-rhi", version = "0.1.0" }
+krateus-rhi-wgpu = { path = "crates/krateus-rhi-wgpu", version = "0.1.0" }
+krateus-render = { path = "crates/krateus-render", version = "0.1.0" }
+krateus-world = { path = "crates/krateus-world", version = "0.1.0" }
+krateus-navigation = { path = "crates/krateus-navigation", version = "0.1.0" }
+krateus-audio = { path = "crates/krateus-audio", version = "0.1.0" }
+krateus-networking = { path = "crates/krateus-networking", version = "0.1.0" }
+krateus-assets = { path = "crates/krateus-assets", version = "0.1.0" }
+krateus-editor = { path = "crates/krateus-editor", version = "0.1.0" }
 
 # Dependencias externas. Versao unica para todo o workspace.
 glam = "0.30"

@@ -17,9 +17,9 @@
 //! - `Query` pega `&Archetypes` — compartilhado, e varios podem te-lo. As
 //!   referencias mutaveis a componentes vem de `Column::base`, cujo ponteiro
 //!   carrega a proveniencia da alocacao e nao a da referencia compartilhada.
-//! - `ResMut` passa por `Resources::get_unchecked_mut`, que usa `UnsafeCell`
-//!   para obter `&mut R` de um slot especifico. Slots de recursos distintos sao
-//!   regioes independentes.
+//! - `ResMut` passa por `Resources::get_ptr`, que usa `UnsafeCell` para obter um
+//!   ponteiro para um slot especifico. Slots de recursos distintos sao regioes
+//!   independentes.
 //!
 //! [`world_mut`](WorldCell::world_mut) existe para os trechos **sequenciais** —
 //! inicializacao dos sistemas e aplicacao dos command buffers — onde o

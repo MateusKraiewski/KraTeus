@@ -122,8 +122,10 @@ suficientes para desenvolver ECS e scheduler, que não tocam a GPU.
 - Iteração sobre 1M de entidades com 3 componentes, medida em `criterion`
 - Spawn e despawn de 100k entidades sem picos de alocação
 - Escalabilidade do scheduler medida de 1 a N threads
-- **Teste de determinismo:** mesma seed produz o mesmo hash de estado após
-  10.000 ticks, com resultado idêntico entre Windows e Linux no CI
+- ✅ **Teste de determinismo:** cenário headless com semente fixa, 300 passos e
+  hash canônico FNV-1a comparado com valor versionado. Roda na matriz
+  Windows/Linux; divergência entre plataformas aparece como falha em uma delas.
+  Verificado também que debug e release produzem o mesmo hash.
 
 ---
 

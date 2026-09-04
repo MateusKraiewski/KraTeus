@@ -508,3 +508,107 @@ impl_system_param_function!(A, B, C);
 impl_system_param_function!(A, B, C, D);
 impl_system_param_function!(A, B, C, D, E);
 impl_system_param_function!(A, B, C, D, E, F);
+
+// --------------------------------------------------------------- exclusivo --
+
+/// Sistema que recebe o mundo inteiro.
+///
+/// Existe para o que os parametros comuns nao alcancam: percorrer varios tipos
+/// de componente de uma vez, consultar entidade por entidade, ou produzir um
+/// retrato completo — como a extracao do Render World.
+///
+/// # E uma fronteira, e isso e visivel
+///
+/// O acesso declarado e [`Access::set_exclusivo`], que conflita com **tudo**.
+/// A consequencia e deliberada: o scheduler coloca este sistema sozinho na
+/// propria subetapa, sem nada em paralelo, e nada de depois se junta ao que
+/// veio antes.
+///
+/// Modelar `&mut World` como um parametro comum esconderia esse custo. O
+/// scheduler nao teria como saber que aquele sistema alcanca tudo, e o `Access`
+/// passaria a mentir — que e a unica coisa que o desenho inteiro nao pode
+/// permitir.
+///
+/// ```
+/// use krateus_ecs::{IntoExclusiveSystem, Schedule, World};
+///
+/// struct Posicao(f32);
+/// struct Contagem(usize);
+///
+/// fn contar_tudo(world: &mut World) {
+///     let n = world.entities().iter().count();
+///     world.insert_resource(Contagem(n));
+/// }
+///
+/// let mut world = World::new();
+/// world.spawn((Posicao(1.0),));
+/// world.spawn((Posicao(2.0),));
+///
+/// let mut schedule = Schedule::new();
+/// schedule.add_stage("extracao");
+/// schedule.add_exclusive_system("extracao", contar_tudo);
+/// schedule.initialize(&mut world);
+/// schedule.run(&mut world);
+///
+/// assert_eq!(world.resource::<Contagem>().0, 2);
+/// # let _ = IntoExclusiveSystem::into_exclusive_system(contar_tudo);
+/// ```
+pub struct ExclusiveFunctionSystem<Func> {
+    func: Func,
+    acesso: Access,
+    last_run: Tick,
+}
+
+impl<Func> System for ExclusiveFunctionSystem<Func>
+where
+    Func: FnMut(&mut World) + Send + Sync + 'static,
+{
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Func>()
+    }
+
+    fn initialize(&mut self, _world: &mut World) {
+        // Nao ha parametro a resolver: o sistema recebe o mundo inteiro.
+        self.acesso = Access::new();
+        self.acesso.set_exclusivo();
+    }
+
+    fn access(&self) -> &Access {
+        &self.acesso
+    }
+
+    unsafe fn run(&mut self, world: WorldCell<'_>, atual: Tick) {
+        // SAFETY: o acesso declarado e exclusivo, entao o contrato de
+        // `System::run` garante que nenhum outro sistema esta em execucao — que
+        // e exatamente a condicao que `world_mut` exige.
+        let mundo = unsafe { world.world_mut() };
+        mundo.set_change_tick(atual);
+        (self.func)(mundo);
+
+        self.last_run = atual;
+    }
+
+    fn apply_deferred(&mut self, _world: &mut World) {
+        // Um sistema exclusivo ja aplicou o que quis; nao ha fila diferida.
+    }
+}
+
+/// Converte uma funcao que recebe o mundo em [`System`].
+pub trait IntoExclusiveSystem {
+    /// Tipo concreto do sistema resultante.
+    type System: System;
+
+    /// Constroi o sistema.
+    fn into_exclusive_system(self) -> Self::System;
+}
+
+impl<Func> IntoExclusiveSystem for Func
+where
+    Func: FnMut(&mut World) + Send + Sync + 'static,
+{
+    type System = ExclusiveFunctionSystem<Func>;
+
+    fn into_exclusive_system(self) -> Self::System {
+        ExclusiveFunctionSystem { func: self, acesso: Access::new(), last_run: Tick::ZERO }
+    }
+}

@@ -59,6 +59,17 @@
 //! seria mais compacto e estaria errado: um sistema tardio poderia cair num
 //! grupo anterior e passar na frente de um sistema com que conflita.
 //!
+//! # Sistemas exclusivos
+//!
+//! [`add_exclusive_system`](Schedule::add_exclusive_system) aceita uma funcao
+//! que recebe `&mut World`. Ela declara acesso exclusivo, o que a faz conflitar
+//! com tudo — e portanto ocupar sozinha a propria subetapa, separando o que veio
+//! antes do que vem depois.
+//!
+//! Modelar `&mut World` como parametro comum esconderia esse custo: o scheduler
+//! nao teria como saber que aquele sistema alcanca tudo, e o `Access` passaria a
+//! mentir. Aqui a limitacao aparece no agrupamento, que e onde ela e paga.
+//!
 //! # Determinismo
 //!
 //! A ordem de execucao dentro de uma subetapa varia, porque e paralela. O
@@ -71,7 +82,7 @@ use std::collections::HashMap;
 use krateus_core::jobs::JobPool;
 
 use crate::access::Access;
-use crate::system::{IntoSystem, System};
+use crate::system::{IntoExclusiveSystem, IntoSystem, System};
 use crate::world::World;
 use crate::world_cell::WorldCell;
 
@@ -155,6 +166,31 @@ impl Schedule {
             .unwrap_or_else(|| panic!("etapa {etapa} nao existe; declare-a com add_stage antes"));
 
         self.etapas[i].sistemas.push(Box::new(sistema.into_system()));
+        self.inicializado = false;
+        self
+    }
+
+    /// Acrescenta um sistema exclusivo ao fim de uma etapa.
+    ///
+    /// Ele recebe `&mut World` e por isso **forma uma fronteira**: nada roda em
+    /// paralelo com ele, e nada de depois se junta a uma subetapa anterior. E o
+    /// que a extracao do Render World precisa, e o custo fica visivel no
+    /// agrupamento em vez de escondido num parametro.
+    ///
+    /// # Panics
+    ///
+    /// Se a etapa nao existir.
+    pub fn add_exclusive_system<S: IntoExclusiveSystem>(
+        &mut self,
+        etapa: &'static str,
+        sistema: S,
+    ) -> &mut Self {
+        let i = *self
+            .indice
+            .get(etapa)
+            .unwrap_or_else(|| panic!("etapa {etapa} nao existe; declare-a com add_stage antes"));
+
+        self.etapas[i].sistemas.push(Box::new(sistema.into_exclusive_system()));
         self.inicializado = false;
         self
     }
@@ -271,26 +307,39 @@ impl Schedule {
                 // exatamente uma subetapa, entao os indices nao se repetem.
                 // O indice vai junto porque e dele que sai o tick: a posicao na
                 // ordem de insercao, e nao a ordem de execucao, que varia.
-                let selecionados: Vec<(usize, &mut Box<dyn System>)> = etapa
+                let mut selecionados: Vec<(usize, &mut Box<dyn System>)> = etapa
                     .sistemas
                     .iter_mut()
                     .enumerate()
                     .filter(|(i, _)| alvo.contains(i))
                     .collect();
 
-                pool.scope(|escopo| {
-                    for (i, sistema) in selecionados {
-                        let atual = base.adiantado(offset + i as u32 + 1);
-                        escopo.spawn(move || {
-                            // SAFETY: os sistemas desta subetapa tem acessos
-                            // mutuamente compativeis — foi essa a condicao para
-                            // ficarem juntos. Nenhum sistema de outra subetapa
-                            // roda ao mesmo tempo, porque `scope` so retorna
-                            // quando todos terminam.
-                            unsafe { sistema.run(cell, atual) };
-                        });
-                    }
-                });
+                // Um sistema exclusivo conflita com tudo, entao ocupa sozinho a
+                // subetapa. Roda na thread chamadora: mandar uma unica tarefa
+                // para o pool so pagaria a ida e a volta, e o `&mut World` que
+                // ele obtem nao ganha nada por estar noutra thread.
+                if let [(i, sistema)] = selecionados.as_mut_slice()
+                    && sistema.access().e_exclusivo()
+                {
+                    let atual = base.adiantado(offset + *i as u32 + 1);
+                    // SAFETY: acesso exclusivo, subetapa de um so, e nenhuma
+                    // tarefa em voo — `scope` da subetapa anterior ja retornou.
+                    unsafe { sistema.run(cell, atual) };
+                } else {
+                    pool.scope(|escopo| {
+                        for (i, sistema) in selecionados {
+                            let atual = base.adiantado(offset + i as u32 + 1);
+                            escopo.spawn(move || {
+                                // SAFETY: os sistemas desta subetapa tem acessos
+                                // mutuamente compativeis — foi essa a condicao
+                                // para ficarem juntos. Nenhum sistema de outra
+                                // subetapa roda ao mesmo tempo, porque `scope`
+                                // so retorna quando todos terminam.
+                                unsafe { sistema.run(cell, atual) };
+                            });
+                        }
+                    });
+                }
             }
             offset += etapa.sistemas.len() as u32;
             // Ver o comentario em `run`.
@@ -740,6 +789,143 @@ mod tests {
         s.run(&mut w);
         assert_eq!(w.resource::<Quadros>().0, 1);
         assert_eq!(w.len(), 2);
+    }
+
+    // ------------------------------------------------ sistemas exclusivos --
+
+    #[derive(Debug, PartialEq)]
+    struct Retrato(Vec<u32>);
+
+    fn retratar(world: &mut World) {
+        let mut posicoes: Vec<u32> = world.query::<&Posicao>().map(|p| p.0 as u32).collect();
+        posicoes.sort_unstable();
+        world.insert_resource(Retrato(posicoes));
+    }
+
+    #[test]
+    fn sistema_exclusivo_ve_o_mundo_inteiro() {
+        let mut w = mundo_base();
+        w.spawn((Posicao(1.0),));
+        w.spawn((Posicao(2.0),));
+
+        let mut s = Schedule::new();
+        s.add_stage("extracao");
+        s.add_exclusive_system("extracao", retratar);
+        s.initialize(&mut w);
+        s.run(&mut w);
+
+        assert_eq!(w.resource::<Retrato>(), &Retrato(vec![1, 2]));
+    }
+
+    #[test]
+    fn exclusivo_ocupa_sozinho_a_propria_subetapa() {
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("etapa");
+        s.add_system("etapa", mover);
+        s.add_system("etapa", danificar);
+        s.add_exclusive_system("etapa", retratar);
+        s.initialize(&mut w);
+
+        let subetapas = s.batches("etapa").unwrap();
+        assert_eq!(subetapas.len(), 2, "os dois primeiros paralelizam, o exclusivo nao");
+        assert_eq!(subetapas[0], vec![0, 1]);
+        assert_eq!(subetapas[1], vec![2]);
+    }
+
+    #[test]
+    fn exclusivo_separa_o_que_veio_antes_do_que_vem_depois() {
+        // E o ponto da fronteira: `danificar` nao conflita com `mover`, mas
+        // tambem nao pode voltar para a subetapa anterior a do exclusivo.
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("etapa");
+        s.add_system("etapa", mover);
+        s.add_exclusive_system("etapa", retratar);
+        s.add_system("etapa", danificar);
+        s.initialize(&mut w);
+
+        let subetapas = s.batches("etapa").unwrap();
+        assert_eq!(subetapas.len(), 3);
+        assert_eq!(subetapas[0], vec![0]);
+        assert_eq!(subetapas[1], vec![1]);
+        assert_eq!(subetapas[2], vec![2]);
+    }
+
+    #[test]
+    fn dois_exclusivos_nao_paralelizam_entre_si() {
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("etapa");
+        s.add_exclusive_system("etapa", retratar);
+        s.add_exclusive_system("etapa", retratar);
+        s.initialize(&mut w);
+
+        assert_eq!(s.batches("etapa").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn exclusivo_conflita_ate_com_sistema_sem_acesso() {
+        fn nao_toca_em_nada(_cmds: &mut Commands) {}
+
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("etapa");
+        s.add_exclusive_system("etapa", retratar);
+        s.add_system("etapa", nao_toca_em_nada);
+        s.initialize(&mut w);
+
+        assert_eq!(
+            s.batches("etapa").unwrap().len(),
+            2,
+            "a fronteira vale mesmo para quem nao toca no mundo"
+        );
+    }
+
+    #[test]
+    fn exclusivo_ve_o_que_a_etapa_anterior_comandou() {
+        fn nascer(cmds: &mut Commands) {
+            cmds.spawn((Posicao(9.0),));
+        }
+
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("criacao").add_stage("extracao");
+        s.add_system("criacao", nascer);
+        s.add_exclusive_system("extracao", retratar);
+        s.initialize(&mut w);
+        s.run(&mut w);
+
+        assert_eq!(w.resource::<Retrato>(), &Retrato(vec![9]));
+    }
+
+    #[test]
+    fn exclusivo_produz_o_mesmo_resultado_em_paralelo() {
+        let montar = || {
+            let mut w = mundo_base();
+            for i in 0..100 {
+                w.spawn((Posicao(i as f32), Velocidade(1.0)));
+            }
+            let mut s = Schedule::new();
+            s.add_stage("etapa");
+            s.add_system("etapa", mover);
+            s.add_exclusive_system("etapa", retratar);
+            s.initialize(&mut w);
+            (w, s)
+        };
+
+        let (mut w1, mut s1) = montar();
+        for _ in 0..5 {
+            s1.run(&mut w1);
+        }
+
+        let (mut w2, mut s2) = montar();
+        let pool = JobPool::new(4);
+        for _ in 0..5 {
+            s2.run_parallel(&mut w2, &pool);
+        }
+
+        assert_eq!(w1.resource::<Retrato>(), w2.resource::<Retrato>());
     }
 
     #[test]

@@ -24,6 +24,11 @@ pub enum Conflict {
     Component(ComponentId),
     /// Recurso pedido de forma incompativel.
     Resource(ResourceId),
+    /// Um dos lados pede o mundo inteiro.
+    ///
+    /// Nao ha identificador a apontar: um sistema exclusivo conflita com tudo,
+    /// inclusive com outro exclusivo.
+    MundoInteiro,
 }
 
 /// Leituras e escritas sobre um unico espaco de identificadores.
@@ -77,6 +82,12 @@ impl<T: Copy + Ord> Espaco<T> {
 pub struct Access {
     componentes: Espaco<ComponentId>,
     recursos: Espaco<ResourceId>,
+    /// Alcanca o mundo inteiro, e portanto conflita com qualquer outro acesso.
+    ///
+    /// Nao e um componente nem um recurso especial de proposito: enumerar
+    /// "tudo" seria impossivel, e um sinalizador diz a mesma coisa sem mentir
+    /// sobre o que foi enumerado.
+    exclusivo: bool,
 }
 
 impl Access {
@@ -84,6 +95,22 @@ impl Access {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Declara que este acesso alcanca o mundo inteiro.
+    ///
+    /// E o que um sistema exclusivo usa. A consequencia e deliberada: ele vira
+    /// fronteira de etapa, sem nada rodando junto — nem antes nem depois dentro
+    /// da mesma subetapa.
+    pub const fn set_exclusivo(&mut self) {
+        self.exclusivo = true;
+    }
+
+    /// Indica se este acesso alcanca o mundo inteiro.
+    #[inline]
+    #[must_use]
+    pub const fn e_exclusivo(&self) -> bool {
+        self.exclusivo
     }
 
     /// Registra leitura de um componente.
@@ -139,6 +166,7 @@ impl Access {
     /// Usado para somar os acessos dos parametros de um sistema num acesso
     /// unico, que e o que o scheduler compara.
     pub fn extend(&mut self, outro: &Self) {
+        self.exclusivo |= outro.exclusivo;
         for &id in &outro.componentes.leituras {
             self.add_component_read(id);
         }
@@ -157,7 +185,7 @@ impl Access {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.componentes.is_empty() && self.recursos.is_empty()
+        !self.exclusivo && self.componentes.is_empty() && self.recursos.is_empty()
     }
 
     /// O que este acesso pede de forma incompativel consigo mesmo.
@@ -178,6 +206,13 @@ impl Access {
     /// escrita do mesmo identificador, no mesmo espaco.
     #[must_use]
     pub fn conflict_with(&self, outro: &Self) -> Option<Conflict> {
+        // Exclusivo conflita com tudo, inclusive com um acesso vazio. Abrir
+        // excecao para o vazio economizaria pouco e apagaria a garantia de
+        // fronteira que e a razao de o sistema exclusivo existir.
+        if self.exclusivo || outro.exclusivo {
+            return Some(Conflict::MundoInteiro);
+        }
+
         self.componentes
             .conflict_with(&outro.componentes)
             .map(Conflict::Component)

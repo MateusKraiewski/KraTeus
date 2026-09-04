@@ -59,7 +59,8 @@ pub use query::{
 pub use resource::{Resource, ResourceId, Resources};
 pub use schedule::Schedule;
 pub use system::{
-    FunctionSystem, IntoSystem, Res, ResMut, System, SystemParam, SystemParamFunction,
+    ExclusiveFunctionSystem, FunctionSystem, IntoExclusiveSystem, IntoSystem, Res, ResMut, System,
+    SystemParam, SystemParamFunction,
 };
 pub use tick::{ComponentTicks, SystemTicks, Tick};
 pub use world::World;

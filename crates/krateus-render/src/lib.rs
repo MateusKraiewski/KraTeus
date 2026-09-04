@@ -37,10 +37,29 @@
 //! ([R01](../../../docs/RISCOS.md)). E arquitetura de CPU pura, verificavel por
 //! CI; nao substitui o triangulo na tela, e nao declara fase nenhuma concluida.
 //!
-//! Falta o laco que amarra os quatro estagios ao `Schedule` como sistemas. A
-//! extracao precisa do `World` inteiro, e os parametros de sistema hoje so
-//! oferecem query e recurso — a peca que falta e um parametro de acesso
-//! exclusivo, e ela entra quando houver um consumidor de verdade.
+//! # Como amarrar ao scheduler
+//!
+//! A extracao precisa do `World` inteiro, e a forma certa de expressar isso e
+//! um **sistema exclusivo** — nao um parametro comum:
+//!
+//! ```
+//! use krateus_ecs::{Schedule, World};
+//! use krateus_render::extract;
+//!
+//! # let mut world = World::new();
+//! let mut schedule = Schedule::new();
+//! schedule.add_stage("simulacao").add_stage("extracao");
+//! schedule.add_exclusive_system("extracao", |world: &mut World| {
+//!     let _snapshot = extract(world);
+//! });
+//! schedule.initialize(&mut world);
+//! ```
+//!
+//! Um `&mut World` como parametro comum esconderia o custo: o scheduler nao
+//! teria como saber que aquele sistema alcanca tudo, e o `Access` passaria a
+//! mentir. Como sistema exclusivo, a extracao vira fronteira de etapa — nada
+//! roda em paralelo com ela — e essa limitacao fica visivel no agrupamento, que
+//! e onde ela e paga.
 
 pub mod componentes;
 pub mod extract;

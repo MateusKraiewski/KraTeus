@@ -332,6 +332,10 @@ version = "0.1.0"
 [[package]]
 name = "krateus-simulation"
 version = "0.1.0"
+dependencies = [
+ "krateus-core",
+ "krateus-ecs",
+]
 
 [[package]]
 name = "krateus-world"

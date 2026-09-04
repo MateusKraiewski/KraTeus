@@ -106,8 +106,9 @@ qualidade travadas antes de haver código para consertar.
   `Query`, `Res`, `ResMut` e `Commands`; `WorldCell` como a segunda
   concentração de `unsafe` do projeto. `run` sequencial e `run_parallel`
   produzem o mesmo estado, com teste comparando os dois.
-- ⬜ Loop de simulação ligando `Clock` e `Schedule` (o `Clock` existe desde a
-  Fase 1; falta o laço que os une)
+- ✅ **Loop de simulação:** `krateus-simulation` liga `Clock` e `Schedule`.
+  Publica `Time` como recurso — sistemas pedem `Res<Time>` — e expõe `alpha`
+  para o renderer interpolar.
 
 **Aceite** (os números viram baseline no primeiro commit da fase)
 

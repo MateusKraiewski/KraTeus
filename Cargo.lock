@@ -297,6 +297,7 @@ name = "krateus-ecs"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "krateus-core",
  "tracing",
 ]
 

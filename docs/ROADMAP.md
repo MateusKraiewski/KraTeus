@@ -100,11 +100,14 @@ qualidade travadas antes de haver código para consertar.
   com empréstimo da pilha, thread chamadora participa, pânico capturado e
   relançado na dona do escopo. Work-stealing adiado com gatilho registrado na
   [D03](DECISOES.md).
-- Scheduler: sistemas declaram acessos de leitura e escrita; o grafo de conflito
-  é derivado dos tipos; executa em paralelo o que não colide, com ordem estável
-  e determinística
-- Loop de simulação: timestep fixo com acumulador, `alpha` de interpolação
-  exposto para o renderer
+- ✅ **Scheduler:** modelo híbrido — etapas semânticas declaradas (`Input`,
+  `Simulacao`, …) como fronteiras de efeito, e paralelismo calculado dentro de
+  cada uma a partir do `Access`. `System`/`SystemParam`/`IntoSystem` com
+  `Query`, `Res`, `ResMut` e `Commands`; `WorldCell` como a segunda
+  concentração de `unsafe` do projeto. `run` sequencial e `run_parallel`
+  produzem o mesmo estado, com teste comparando os dois.
+- ⬜ Loop de simulação ligando `Clock` e `Schedule` (o `Clock` existe desde a
+  Fase 1; falta o laço que os une)
 
 **Aceite** (os números viram baseline no primeiro commit da fase)
 

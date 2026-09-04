@@ -83,6 +83,21 @@ impl World {
         &self.components
     }
 
+    /// Registro de tipos de componente, para registrar tipos novos.
+    ///
+    /// Exposto para os parametros de sistema, que resolvem seus componentes na
+    /// inicializacao.
+    #[inline]
+    pub const fn components_mut(&mut self) -> &mut Components {
+        &mut self.components
+    }
+
+    /// Recursos do mundo, para registrar tipos novos.
+    #[inline]
+    pub const fn resources_mut(&mut self) -> &mut Resources {
+        &mut self.resources
+    }
+
     /// Indica se a entidade existe.
     #[inline]
     #[must_use]

@@ -41,7 +41,10 @@ pub mod component;
 pub mod entity;
 pub mod query;
 pub mod resource;
+pub mod schedule;
+pub mod system;
 pub mod world;
+pub mod world_cell;
 
 pub use access::{Access, Conflict};
 pub use archetype::{Archetype, ArchetypeId, Archetypes};
@@ -49,6 +52,11 @@ pub use bundle::Bundle;
 pub use commands::Commands;
 pub use component::{Component, ComponentId, ComponentInfo, Components};
 pub use entity::{Entities, Entity, EntityLocation};
-pub use query::{QueryData, QueryFilter, QueryIter, With, Without};
+pub use query::{Query, QueryData, QueryFilter, QueryIter, QueryState, With, Without};
 pub use resource::{Resource, ResourceId, Resources};
+pub use schedule::Schedule;
+pub use system::{
+    FunctionSystem, IntoSystem, Res, ResMut, System, SystemParam, SystemParamFunction,
+};
 pub use world::World;
+pub use world_cell::WorldCell;

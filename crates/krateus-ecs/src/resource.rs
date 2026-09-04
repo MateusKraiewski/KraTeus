@@ -11,6 +11,7 @@
 //! coloca o valor.
 
 use std::any::{Any, TypeId, type_name};
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -44,11 +45,28 @@ impl ResourceId {
 pub struct Resources {
     /// Indexado por [`ResourceId`]. `None` quando o tipo foi registrado mas
     /// nenhum valor foi inserido.
-    slots: Vec<Option<Box<dyn Any + Send + Sync>>>,
+    ///
+    /// O `UnsafeCell` existe por causa do scheduler. Dois sistemas que escrevem
+    /// recursos diferentes rodam em paralelo, cada um segurando apenas um
+    /// `&Resources` — e derivar `&mut` de uma referencia compartilhada e
+    /// aliasing invalido, ainda que os alvos sejam disjuntos. `UnsafeCell` e a
+    /// ferramenta exata para "referencia compartilhada, exclusividade provada
+    /// por fora"; aqui, provada pelo [`Access`](crate::Access).
+    ///
+    /// Os slots sao independentes entre si, entao a exclusividade e por recurso,
+    /// nao pela colecao.
+    slots: Vec<Option<UnsafeCell<Box<dyn Any + Send + Sync>>>>,
     nomes: Vec<&'static str>,
     indices: HashMap<TypeId, ResourceId>,
     presentes: usize,
 }
+
+// SAFETY: o `UnsafeCell` dos slots nao cria mutabilidade compartilhada
+// acessivel pela API segura: mutar exige `&mut self`, e com apenas
+// `&Resources` so se obtem `&R`. A unica porta para `&mut R` a partir de
+// `&self` e `get_unchecked_mut`, que e `unsafe` e transfere a obrigacao para
+// quem chama.
+unsafe impl Sync for Resources {}
 
 impl Resources {
     /// Cria uma colecao vazia.
@@ -109,10 +127,12 @@ impl Resources {
     /// Insere o valor, devolvendo o anterior se havia um.
     pub fn insert<R: Resource>(&mut self, valor: R) -> Option<R> {
         let id = self.register::<R>();
-        let anterior = self.slots[id.index()].replace(Box::new(valor));
+        let anterior = self.slots[id.index()].replace(UnsafeCell::new(Box::new(valor)));
 
         match anterior {
-            Some(caixa) => Some(*caixa.downcast::<R>().expect("slot guarda o tipo do seu id")),
+            Some(caixa) => {
+                Some(*caixa.into_inner().downcast::<R>().expect("slot guarda o tipo do seu id"))
+            }
             None => {
                 self.presentes += 1;
                 None
@@ -125,7 +145,7 @@ impl Resources {
         let id = self.id::<R>()?;
         let caixa = self.slots[id.index()].take()?;
         self.presentes -= 1;
-        Some(*caixa.downcast::<R>().expect("slot guarda o tipo do seu id"))
+        Some(*caixa.into_inner().downcast::<R>().expect("slot guarda o tipo do seu id"))
     }
 
     /// Indica se `R` tem valor presente.
@@ -138,13 +158,38 @@ impl Resources {
     #[must_use]
     pub fn get<R: Resource>(&self) -> Option<&R> {
         let id = self.id::<R>()?;
-        self.slots[id.index()].as_ref()?.downcast_ref::<R>()
+        let celula = self.slots[id.index()].as_ref()?;
+        // SAFETY: `&self` garante que ninguem tem `&mut` a esta colecao pela
+        // API segura. A unica forma de haver um `&mut R` vivo aqui seria por
+        // `get_unchecked_mut`, cujo contrato proibe exatamente isso.
+        unsafe { &*celula.get() }.downcast_ref::<R>()
     }
 
     /// Referencia mutavel ao valor de `R`.
     pub fn get_mut<R: Resource>(&mut self) -> Option<&mut R> {
         let id = self.id::<R>()?;
-        self.slots[id.index()].as_mut()?.downcast_mut::<R>()
+        self.slots[id.index()].as_mut()?.get_mut().downcast_mut::<R>()
+    }
+
+    /// Referencia mutavel ao valor de `R` a partir de `&self`.
+    ///
+    /// Existe para o scheduler: dois sistemas que escrevem recursos distintos
+    /// rodam em paralelo segurando apenas `&Resources`, e a disjuncao entre eles
+    /// e provada pelo [`Access`](crate::Access), nao pelo compilador.
+    ///
+    /// # Safety
+    ///
+    /// Enquanto a referencia devolvida existir, nenhum outro acesso ao recurso
+    /// `R` — leitura ou escrita, por esta ou por outra thread — pode estar
+    /// ativo. Recursos de tipos diferentes ocupam slots independentes e nao se
+    /// afetam.
+    pub(crate) unsafe fn get_unchecked_mut<R: Resource>(&self) -> Option<&mut R> {
+        let id = self.id::<R>()?;
+        let celula = self.slots[id.index()].as_ref()?;
+        // SAFETY: o contrato acima transfere para quem chama a garantia de que
+        // este slot nao esta sendo acessado por mais ninguem. `UnsafeCell::get`
+        // devolve um ponteiro legitimamente mutavel a partir de `&self`.
+        unsafe { &mut *celula.get() }.downcast_mut::<R>()
     }
 
     /// Itera sobre os recursos registrados, em ordem de registro.

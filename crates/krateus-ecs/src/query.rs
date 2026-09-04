@@ -89,8 +89,9 @@ pub unsafe trait QueryData {
     /// Valor entregue por entidade.
     type Item<'w>;
     /// Dados resolvidos uma vez por query. Sem tempo de vida, para poder ser
-    /// guardado por um sistema.
-    type State: Send + Sync + 'static;
+    /// guardado por um sistema; `Clone` para o iterador levar uma copia sem
+    /// prender o estado por emprestimo.
+    type State: Send + Sync + Clone + 'static;
     /// Ponteiros resolvidos uma vez por archetype.
     ///
     /// `Copy` porque e passado por valor a cada linha: sao ponteiros, e
@@ -266,7 +267,7 @@ impl_query_data_tupla!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (
 /// Condicao que um archetype precisa satisfazer, sem que nada seja lido dele.
 pub trait QueryFilter {
     /// Dados resolvidos uma vez por query.
-    type State: Send + Sync;
+    type State: Send + Sync + Clone + 'static;
 
     /// Registra os componentes envolvidos e devolve o estado do filtro.
     fn init_state(components: &mut Components) -> Self::State;
@@ -364,15 +365,17 @@ impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
     ///
     /// Se `D` pedir o mesmo componente de forma conflitante.
     pub(crate) fn new(archetypes: &'w Archetypes, components: &mut Components) -> Self {
-        let state = D::init_state(components);
-        let filtro = F::init_state(components);
+        let estado = QueryState::<D, F>::new(components);
+        Self::from_state(archetypes, &estado)
+    }
 
-        let mut acesso = Access::new();
-        D::access(&state, &mut acesso);
-        if let Some(Conflict::Component(id)) = acesso.self_conflict() {
-            let nome = components.info(id).map_or("?", |i| i.name());
-            panic!("query pede o componente {nome} de forma conflitante consigo mesma");
-        }
+    /// Monta a query a partir de um estado ja resolvido.
+    ///
+    /// E o caminho de um sistema, que resolve o estado uma vez na
+    /// inicializacao e o reaproveita a cada passo.
+    pub(crate) fn from_state(archetypes: &'w Archetypes, estado: &QueryState<D, F>) -> Self {
+        let state = estado.data.clone();
+        let filtro = estado.filtro.clone();
 
         let mut correspondentes = Vec::new();
         let mut restantes = 0;
@@ -622,5 +625,88 @@ mod tests {
         let mut vistos: Vec<_> = w.query::<&Posicao>().map(|p| p.0).collect();
         vistos.sort_by(f32::total_cmp);
         assert_eq!(vistos, vec![2.0, 3.0]);
+    }
+}
+
+/// Estado resolvido de uma query, reaproveitavel entre execucoes.
+///
+/// Um sistema resolve isto uma vez, na inicializacao, e o usa a cada passo. Sem
+/// ele, cada execucao repetiria o registro dos componentes e o calculo do
+/// acesso.
+#[derive(Debug, Clone)]
+pub struct QueryState<D: QueryData, F: QueryFilter = ()> {
+    data: D::State,
+    filtro: F::State,
+    acesso: Access,
+}
+
+impl<D: QueryData, F: QueryFilter> QueryState<D, F> {
+    /// Resolve o estado, registrando no mundo os componentes envolvidos.
+    ///
+    /// # Panics
+    ///
+    /// Se `D` pedir o mesmo componente de forma conflitante consigo mesma.
+    pub fn new(components: &mut Components) -> Self {
+        let data = D::init_state(components);
+        let filtro = F::init_state(components);
+
+        let mut acesso = Access::new();
+        D::access(&data, &mut acesso);
+        if let Some(Conflict::Component(id)) = acesso.self_conflict() {
+            let nome = components.info(id).map_or("?", |i| i.name());
+            panic!("query pede o componente {nome} de forma conflitante consigo mesma");
+        }
+
+        Self { data, filtro, acesso }
+    }
+
+    /// Componentes que esta query le e escreve.
+    #[inline]
+    #[must_use]
+    pub const fn access(&self) -> &Access {
+        &self.acesso
+    }
+}
+
+/// Query pronta para uso, como um sistema a recebe.
+///
+/// Guarda o mundo e o estado ja resolvido; `iter` produz a iteracao.
+pub struct Query<'w, 's, D: QueryData, F: QueryFilter = ()> {
+    archetypes: &'w Archetypes,
+    estado: &'s QueryState<D, F>,
+}
+
+impl<'w, 's, D: QueryData, F: QueryFilter> Query<'w, 's, D, F> {
+    /// Constroi a query a partir dos archetypes e do estado.
+    #[must_use]
+    pub const fn new(archetypes: &'w Archetypes, estado: &'s QueryState<D, F>) -> Self {
+        Self { archetypes, estado }
+    }
+
+    /// Percorre as entidades que casam.
+    ///
+    /// Recebe `&mut self` de proposito: com `&self`, duas chamadas produziriam
+    /// dois iteradores vivos ao mesmo tempo, e num query com `&mut T` isso seria
+    /// aliasing sobre a mesma linha.
+    pub fn iter(&mut self) -> QueryIter<'_, D, F> {
+        QueryIter::from_state(self.archetypes, self.estado)
+    }
+
+    /// Quantas entidades casam neste instante.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        QueryIter::<D, F>::from_state(self.archetypes, self.estado).len()
+    }
+
+    /// Indica se nenhuma entidade casa.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+}
+
+impl<D: QueryData, F: QueryFilter> std::fmt::Debug for Query<'_, '_, D, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Query").field("correspondencias", &self.count()).finish()
     }
 }

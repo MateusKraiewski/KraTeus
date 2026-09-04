@@ -10,13 +10,16 @@
 #![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use krateus_ecs::{With, World};
+use krateus_core::jobs::JobPool;
+use krateus_ecs::{Query, Schedule, With, World};
 use std::hint::black_box;
 
 struct Posicao(f32, f32, f32);
 struct Velocidade(f32, f32, f32);
 struct Aceleracao(f32, f32, f32);
 struct Estatica;
+struct Idade(u32);
+struct Calor(f32);
 
 fn mundo_com(n: u32) -> World {
     let mut w = World::new();
@@ -126,5 +129,81 @@ fn iteracao_fragmentada(c: &mut Criterion) {
     grupo.finish();
 }
 
-criterion_group!(benches, spawn, spawn_despawn, iteracao, iteracao_fragmentada);
+/// Escalabilidade do scheduler de 1 a N threads.
+///
+/// Criterio de aceite da Fase 2. Os quatro sistemas escrevem componentes
+/// distintos, entao o `Access` os coloca todos na mesma subetapa e a curva
+/// mostra o ganho real do paralelismo.
+fn escalabilidade_do_scheduler(c: &mut Criterion) {
+    fn integrar(mut q: Query<(&mut Posicao, &Velocidade)>) {
+        for (p, v) in q.iter() {
+            p.0 += v.0;
+            p.1 += v.1;
+            p.2 += v.2;
+        }
+    }
+    fn acelerar(mut q: Query<(&mut Velocidade, &Aceleracao)>) {
+        for (v, a) in q.iter() {
+            v.0 += a.0;
+        }
+    }
+    fn envelhecer(mut q: Query<&mut Idade>) {
+        for i in q.iter() {
+            i.0 += 1;
+        }
+    }
+    fn aquecer(mut q: Query<&mut Calor>) {
+        for t in q.iter() {
+            t.0 *= 0.99;
+        }
+    }
+
+    let mut grupo = c.benchmark_group("ecs/scheduler");
+    grupo.sample_size(10);
+
+    for threads in [0_usize, 1, 2, 4] {
+        let mut w = World::new();
+        for i in 0..200_000_u32 {
+            let f = i as f32;
+            w.spawn((
+                Posicao(f, f, f),
+                Velocidade(1.0, 1.0, 1.0),
+                Aceleracao(0.01, 0.01, 0.01),
+                Idade(0),
+                Calor(1.0),
+            ));
+        }
+
+        let mut s = Schedule::new();
+        s.add_stage("simulacao");
+        s.add_system("simulacao", integrar);
+        s.add_system("simulacao", acelerar);
+        s.add_system("simulacao", envelhecer);
+        s.add_system("simulacao", aquecer);
+        s.initialize(&mut w);
+
+        // Integrar le Velocidade e acelerar a escreve: duas subetapas, com
+        // envelhecer e aquecer paralelizando junto.
+        assert_eq!(s.batches("simulacao").map(<[Vec<usize>]>::len), Some(2));
+
+        let pool = JobPool::new(threads);
+        grupo.bench_function(format!("200k_entidades_{threads}_threads_extras"), |b| {
+            b.iter(|| {
+                s.run_parallel(&mut w, &pool);
+                black_box(&w);
+            });
+        });
+    }
+
+    grupo.finish();
+}
+
+criterion_group!(
+    benches,
+    spawn,
+    spawn_despawn,
+    iteracao,
+    iteracao_fragmentada,
+    escalabilidade_do_scheduler
+);
 criterion_main!(benches);

@@ -134,6 +134,25 @@ impl Access {
         &self.recursos.escritas
     }
 
+    /// Incorpora tudo o que `outro` declara.
+    ///
+    /// Usado para somar os acessos dos parametros de um sistema num acesso
+    /// unico, que e o que o scheduler compara.
+    pub fn extend(&mut self, outro: &Self) {
+        for &id in &outro.componentes.leituras {
+            self.add_component_read(id);
+        }
+        for &id in &outro.componentes.escritas {
+            self.add_component_write(id);
+        }
+        for &id in &outro.recursos.leituras {
+            self.add_resource_read(id);
+        }
+        for &id in &outro.recursos.escritas {
+            self.add_resource_write(id);
+        }
+    }
+
     /// Indica se o acesso nao toca em nada.
     #[inline]
     #[must_use]

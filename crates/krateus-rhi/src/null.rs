@@ -14,6 +14,8 @@
 //! Ele tambem registra o que recebeu, em [`NullRhi::registro`], para que um
 //! teste possa afirmar *o que* foi gravado, e nao apenas que nada falhou.
 
+use std::ops::Range;
+
 use krateus_core::pool::Pool;
 
 use crate::error::{Result, RhiError};
@@ -40,8 +42,8 @@ pub enum Operacao {
     FixouPipeline,
     /// Buffer de vertices ligado a este slot.
     LigouVertices(u32),
-    /// Desenho com esta contagem de vertices e instancias.
-    Desenhou(u32, u32),
+    /// Desenho: faixa de vertices e faixa de instancias.
+    Desenhou(Range<u32>, Range<u32>),
     /// Passe fechado.
     FechouPasse,
     /// Listas submetidas.
@@ -355,11 +357,16 @@ impl Rhi for NullRhi {
         Ok(())
     }
 
-    fn draw(&mut self, passe: RenderPassId, vertices: u32, instancias: u32) -> Result<()> {
-        if vertices == 0 || instancias == 0 {
+    fn draw(
+        &mut self,
+        passe: RenderPassId,
+        vertices: Range<u32>,
+        instancias: Range<u32>,
+    ) -> Result<()> {
+        if vertices.is_empty() || instancias.is_empty() {
             return Err(RhiError::DescritorInvalido {
                 tipo: "draw",
-                motivo: "contagem de vertices ou instancias zerada",
+                motivo: "faixa de vertices ou de instancias vazia",
             });
         }
 

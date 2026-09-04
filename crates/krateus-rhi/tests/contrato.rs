@@ -93,7 +93,7 @@ fn o_quadro_do_triangulo_grava_na_ordem_esperada() {
 
     rhi.set_pipeline(passe, pipeline).expect("pipeline");
     rhi.set_vertex_buffer(passe, 0, vertices).expect("vertices");
-    rhi.draw(passe, 3, 1).expect("desenho");
+    rhi.draw(passe, 0..3, 0..1).expect("desenho");
     rhi.end_render_pass(passe).expect("fim do passe");
 
     let lista = rhi.finish_encoder(enc).expect("lista");
@@ -107,7 +107,7 @@ fn o_quadro_do_triangulo_grava_na_ordem_esperada() {
             Operacao::AbriuPasse(1),
             Operacao::FixouPipeline,
             Operacao::LigouVertices(0),
-            Operacao::Desenhou(3, 1),
+            Operacao::Desenhou(0..3, 0..1),
             Operacao::FechouPasse,
             Operacao::Submeteu(1),
             Operacao::ApresentouQuadro(0),
@@ -306,11 +306,11 @@ fn desenhar_sem_pipeline_falha() {
     let passe =
         rhi.begin_render_pass(enc, &RenderPassDesc { rotulo: "p", cores: &anexos }).expect("passe");
 
-    assert!(matches!(rhi.draw(passe, 3, 1).unwrap_err(), RhiError::OrdemInvalida(_)));
+    assert!(matches!(rhi.draw(passe, 0..3, 0..1).unwrap_err(), RhiError::OrdemInvalida(_)));
 }
 
 #[test]
-fn desenho_com_contagem_zerada_falha() {
+fn desenho_com_faixa_vazia_falha() {
     let (mut rhi, pipeline, _) = preparar();
     let frame = rhi.acquire_frame().expect("quadro");
     let enc = rhi.create_command_encoder("e").expect("encoder");
@@ -320,8 +320,8 @@ fn desenho_com_contagem_zerada_falha() {
         rhi.begin_render_pass(enc, &RenderPassDesc { rotulo: "p", cores: &anexos }).expect("passe");
     rhi.set_pipeline(passe, pipeline).expect("pipeline");
 
-    assert!(matches!(rhi.draw(passe, 0, 1).unwrap_err(), RhiError::DescritorInvalido { .. }));
-    assert!(matches!(rhi.draw(passe, 3, 0).unwrap_err(), RhiError::DescritorInvalido { .. }));
+    assert!(matches!(rhi.draw(passe, 0..0, 0..1).unwrap_err(), RhiError::DescritorInvalido { .. }));
+    assert!(matches!(rhi.draw(passe, 0..3, 0..0).unwrap_err(), RhiError::DescritorInvalido { .. }));
 }
 
 #[test]

@@ -164,8 +164,11 @@ que a separação paga.
 
 **Entregáveis**
 
-- Render World com estágios explícitos: `extract` (ECS → dados de render),
-  `prepare`, `queue`, `render`
+- 🚧 Render World com estágios explícitos: `extract` → `prepare` → `queue` →
+  `render`, adiantado durante o bloqueio da Fase 3 por ser costura de CPU pura.
+  Snapshot sem referência ao `World`; culling por frustum em `prepare`; lotes
+  canônicos em `queue`; `render` consome apenas pela RHI e é testado contra o
+  backend nulo. **Não abre a Fase 4** — o restante depende de GPU.
 - Sprites em lote, mesh estática, câmera 2D e 3D, material simples, texturas
 - GPU instancing, frustum culling, ordenação por estado para reduzir draw calls
 

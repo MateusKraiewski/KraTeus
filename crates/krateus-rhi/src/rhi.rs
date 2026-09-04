@@ -28,6 +28,8 @@
 //! backend Vulkan nativo talvez descubra que a interface nao lhe da onde colocar
 //! um `VkFence`. Quando esse dia chegar, e a interface que muda.
 
+use std::ops::Range;
+
 use crate::error::Result;
 use crate::types::{
     BufferDesc, BufferId, CommandBufferId, CommandEncoderId, Frame, RenderPassDesc, RenderPassId,
@@ -170,11 +172,21 @@ pub trait Rhi: Send + Sync {
 
     /// Emite um desenho.
     ///
+    /// As faixas espelham `vkCmdDraw` e `DrawInstanced`: as duas APIs recebem
+    /// um primeiro indice alem da contagem. O deslocamento de instancia e o que
+    /// permite a um lote desenhar sua fatia de um buffer de instancias
+    /// compartilhado, sem religar o buffer a cada lote.
+    ///
     /// # Errors
     ///
-    /// Se o passe nao existir, se nenhum pipeline tiver sido fixado, ou se a
-    /// contagem de vertices ou instancias for zero.
-    fn draw(&mut self, passe: RenderPassId, vertices: u32, instancias: u32) -> Result<()>;
+    /// Se o passe nao existir, se nenhum pipeline tiver sido fixado, ou se
+    /// alguma das faixas for vazia.
+    fn draw(
+        &mut self,
+        passe: RenderPassId,
+        vertices: Range<u32>,
+        instancias: Range<u32>,
+    ) -> Result<()>;
 
     /// Fecha o passe.
     ///

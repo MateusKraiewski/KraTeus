@@ -17,6 +17,50 @@ enquanto ainda são baratas de mudar.
 
 ---
 
+## Onde o trabalho parou — 2026-09-04
+
+Desenvolvimento **pausado por decisão**, não por dificuldade. A Fase 2 está
+completa e verificada; a Fase 3 tem o que não depende de GPU, e o restante está
+bloqueado pelo ambiente.
+
+### O que existe e funciona
+
+| Camada | Estado |
+|---|---|
+| `krateus-core` | `Handle`, `Pool`, `Clock`, logging, config em camadas, `JobPool` |
+| `krateus-ecs` | archetypes, queries com filtros, recursos, command buffer, scheduler híbrido, change detection, sistemas exclusivos |
+| `krateus-simulation` | laço de timestep fixo + teste de determinismo cross-platform |
+| `krateus-rhi` | vocabulário mínimo + backend nulo que valida o contrato ([D12](DECISOES.md) — experimental) |
+| `krateus-render` | Render World completo: `extract` → `prepare` → `queue` → `render` |
+
+A fronteira **ECS → Render World → RHI** está validada de ponta a ponta em CPU,
+com teste de integração que vai do mundo lógico ao comando de GPU sem janela.
+
+### O que bloqueia, e é uma decisão e não uma tarefa
+
+O critério de aceite da Fase 3 — *"triângulo colorido na tela, com resize e
+alt-tab estáveis"* — exige janela e GPU nesta máquina, e o
+[R01](RISCOS.md) impede. As vias de autorização administrada foram testadas e
+descartadas; sobram três caminhos, todos com custo, nenhum técnico:
+
+1. desativar o Smart App Control (irreversível sem reinstalar o Windows);
+2. outro ambiente com GPU nativa;
+3. seguir sem verificação visual, o que a Fase 3 não permite.
+
+### Por que parar aqui e não continuar
+
+O que sobrava sem GPU era pequeno e especulativo. Escrever mais camadas sem
+consumidor produziria abstração que ninguém exercitou — exatamente o que o §19
+proíbe, e o oposto do que as decisões deste projeto vinham fazendo.
+
+### Para retomar
+
+Nada a desfazer: a árvore está limpa e o CI verde. Com ambiente gráfico
+disponível, o próximo passo é o backend `krateus-rhi-wgpu`, que já nasce com os
+25 testes de contrato do backend nulo para passar.
+
+---
+
 ## Fase 0 — Ambiente ✅
 
 - ✅ `rustup` + toolchain `stable-x86_64-pc-windows-msvc` (`rustc 1.98.1`)

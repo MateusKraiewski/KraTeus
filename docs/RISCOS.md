@@ -7,7 +7,8 @@ for eliminado ou aceito de forma explicita, com a decisao registrada.
 
 ## R01 — Smart App Control bloqueia binarios de desenvolvimento
 
-**Status:** aberto — aceito para a Fase 2, bloqueante a partir da Fase 3
+**Status:** aberto — bloqueante para a Fase 3; vias de autorizacao administrada
+testadas e descartadas em 2026-09-04
 **Registrado em:** 2026-09-03
 **Detalhe tecnico completo:** [AMBIENTE.md](AMBIENTE.md)
 
@@ -68,6 +69,65 @@ certificado proprio confiado por politica. So se essas vias falharem a escolha
 passa a ser entre sacrificar o fluxo local nativo e desativar o SAC.
 
 Desativar o SAC e irreversivel sem reinstalar o Windows.
+
+### Reavaliação de 2026-09-04, antes da Fase 3
+
+Como previsto no gatilho, as vias de autorização administrada foram testadas
+antes de introduzir `wgpu`. O resultado é negativo, e o registro abaixo existe
+para que ninguém precise repetir os testes.
+
+### Estado medido
+
+51 bloqueios em 24 horas, sobre 8 binários distintos: DLLs de proc-macro
+(`thiserror_impl`, `tracing_attributes`), build scripts, `cargo-clippy.exe`,
+binários de teste do próprio projeto e `rust_out.exe` — o executável de doctest.
+O harness de benchmark (`criterion` → `num-traits`) segue bloqueado de forma
+reproduzível.
+
+### Assinatura com certificado próprio — **não funciona**
+
+Testado diretamente: um binário bloqueado foi copiado, assinado com certificado
+de assinatura de código autoassinado e executado de novo. Continuou bloqueado.
+O Windows reporta a assinatura como inválida — "cadeia terminou em certificado
+raiz que não é confiável".
+
+Colocar a raiz no repositório confiável da máquina tornaria a *assinatura*
+válida, mas não resolve: o Smart App Control não decide por confiança local. Ele
+exige assinatura da Microsoft, ou um certificado com reputação estabelecida no
+Intelligent Security Graph, ou reputação do próprio arquivo. Um certificado
+recém-criado não tem nenhuma das três, e reputação não se concede localmente.
+
+### Política WDAC suplementar — **não disponível**
+
+Duas barreiras, ambas verificadas:
+
+- `CiTool -lp` retorna acesso negado sem elevação, então nem enumerar as
+  políticas ativas é possível no fluxo normal de desenvolvimento.
+- A política do SAC (`{0283AC0F-FFF1-49AE-ADA1-8A933130CAD6}`, 7 KB, assinada
+  pela Microsoft) é uma política de consumidor, ligada e desligada por um
+  interruptor. Uma suplementar só pode ser acrescentada se a base declarar a
+  opção correspondente, e adicionar qualquer política exige elevação a cada
+  build — o que não é um fluxo de trabalho.
+
+### Conclusão
+
+**As duas vias de autorização administrada estão fechadas.** A escolha real,
+como o registro anterior antecipava, ficou entre:
+
+1. **Desativar o Smart App Control.** Irreversível sem reinstalar o Windows.
+2. **Sacrificar o fluxo local nativo** — WSL2, VM ou dual boot. Todas custam
+   caro justamente nas Fases 3 a 5, que precisam de GPU real na máquina.
+3. **Seguir com o fluxo atual** — `cargo check` e `cargo clippy` locais, CI Linux
+   como autoridade. Funciona até a Fase 3, quando aparece um executável de
+   janela que precisa rodar localmente com GPU para que qualquer coisa possa ser
+   vista ou medida.
+
+A opção 3 deixa de ser suficiente exatamente no critério de aceite da Fase 3:
+"triângulo colorido na tela, com resize e alt-tab estáveis". Isso não se verifica
+por CI.
+
+**Decisão pendente do responsável pela máquina.** Nada foi alterado: o
+certificado de teste foi removido e nenhuma política foi tocada.
 
 ---
 
@@ -131,3 +191,4 @@ necessaria ali e evidencia de vazamento.
 **Mitigacao:** fatia vertical nas Fases 1 a 4, entregando algo executavel cedo;
 nenhuma feature entra sem um caso de uso que a exija; toda fase tem criterio de
 aceite medido, o que impede declarar pronto o que nao esta.
+

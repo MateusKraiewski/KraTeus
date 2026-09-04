@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Mateus Kraiewski"]
-repository = "https://github.com/mateuskraiewski/krateus"
+repository = "https://github.com/MateusKraiewski/KraTeus"
 
 # Dependencias internas declaradas uma vez. A `version` acompanha o `path`
 # porque uma dependencia de caminho sem versao conta como wildcard para o

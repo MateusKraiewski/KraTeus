@@ -129,15 +129,23 @@ suficientes para desenvolver ECS e scheduler, que não tocam a GPU.
 
 ---
 
-## Fase 3 — RHI e primeiro backend
+## Fase 3 — RHI e primeiro backend 🚧
 
 **Objetivo.** §7. A costura que impede o resto da engine de conhecer uma API
 gráfica.
 
+> **Bloqueada no aceite.** "Triângulo colorido na tela, com resize e alt-tab"
+> exige janela e GPU nesta máquina, e o [R01](RISCOS.md) impede. As vias de
+> autorização administrada foram testadas em 2026-09-04 e descartadas. O que
+> não depende de GPU está sendo adiantado; o aceite continua em aberto.
+
 **Entregáveis**
 
-- `krateus-rhi`: traits Device, Queue, Swapchain, Buffer, Texture, Sampler,
-  ShaderModule, Pipeline, BindGroup, CommandBuffer, RenderPass
+- 🚧 `krateus-rhi`: vocabulário mínimo escrito e validado por backend nulo —
+  buffer, textura, shader, pipeline, encoder, passe, superfície. **Interna e
+  experimental** até o primeiro backend real ([D12](DECISOES.md)). Sem bind
+  groups, samplers nem profundidade: entram com o caso de uso que os exija.
+- ⬜ `NullRhi` cobre o contrato no CI; falta o backend de verdade
 - Backend `rhi-wgpu` implementando essas traits (ver D01)
 - Janela e input via `winit`; surface, present, resize, troca de modo de exibição
 

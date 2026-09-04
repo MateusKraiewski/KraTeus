@@ -324,6 +324,10 @@ version = "0.1.0"
 [[package]]
 name = "krateus-rhi"
 version = "0.1.0"
+dependencies = [
+ "krateus-core",
+ "thiserror",
+]
 
 [[package]]
 name = "krateus-rhi-wgpu"

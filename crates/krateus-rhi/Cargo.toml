@@ -7,7 +7,12 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[lib]
+bench = false
+
 [lints]
 workspace = true
 
 [dependencies]
+krateus-core.workspace = true
+thiserror.workspace = true

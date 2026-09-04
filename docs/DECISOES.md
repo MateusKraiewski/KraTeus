@@ -304,3 +304,54 @@ iteração continua disponível.
 
 **Custo de reversão.** Baixo: acrescentar o retorno é aditivo, e nenhuma
 assinatura existente muda.
+
+---
+
+## D12 — A RHI é interna e experimental até o primeiro triângulo
+
+**Decisão.** `krateus-rhi` existe e compila, mas **não é contrato público**.
+Assinaturas podem mudar sem aviso até que exista um backend real e o critério
+de aceite da Fase 3 — triângulo na tela, com resize e alt-tab — tenha sido
+verificado.
+
+### Por quê
+
+A [D01](#d01--backend-gráfico-rhi-própria-primeiro-backend-sobre-wgpu) diz que
+o objetivo da RHI é não contaminar a engine com uma API única, e que isso só
+fica provado quando houver um segundo backend. Enquanto houver **zero**, o
+risco é maior ainda: uma interface desenhada sem nenhuma implementação é uma
+hipótese, não um projeto.
+
+Congelar agora seria o pior dos mundos — pagaria o custo de estabilidade sem
+ter a evidência que a justifica.
+
+### O que já está fechado, e o que não está
+
+Fechado: a **forma**. Comandos são gravados num encoder e submetidos, como em
+`VkCommandBuffer` e `ID3D12GraphicsCommandList`. Identificadores são opacos, a
+interface é objeto-segura, e o `krateus-render` vai segurar `Box<dyn Rhi>`.
+
+Não fechado: praticamente todo o resto. Em particular, **sincronização não
+aparece na interface** — barreiras de memória, transições de layout de imagem,
+semáforos entre aquisição e apresentação. Um backend sobre wgpu cumpre sem
+esforço, porque o wgpu já resolve. Um backend Vulkan nativo pode descobrir que
+não há onde colocar um `VkFence`. É exatamente o [R04](RISCOS.md), e é a
+primeira coisa que o segundo backend vai cobrar.
+
+### Escopo deliberadamente pequeno
+
+Só o vocabulário que a primeira fatia vertical exige. Sem bind groups,
+samplers, profundidade, compute ou múltiplos alvos — não por serem difíceis,
+mas porque modelar recurso sem um caso de uso que o exerça produz abstração que
+ninguém testou (§19).
+
+### O backend nulo
+
+`NullRhi` não desenha nada e valida tudo: passe fechado antes de submeter,
+pipeline fixado antes de desenhar, quadro apresentado antes de adquirir outro,
+formato do pipeline igual ao do passe. Isso torna as regras que a interface
+enuncia em prosa verificáveis no CI, sem GPU — e dá ao primeiro backend real
+uma bateria de testes que ele precisa passar.
+
+**Custo de reversão.** Baixo por construção: é essa a razão de a decisão
+existir.

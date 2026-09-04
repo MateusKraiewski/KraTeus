@@ -55,9 +55,24 @@ proíbe, e o oposto do que as decisões deste projeto vinham fazendo.
 
 ### Para retomar
 
-Nada a desfazer: a árvore está limpa e o CI verde. Com ambiente gráfico
-disponível, o próximo passo é o backend `krateus-rhi-wgpu`, que já nasce com os
-25 testes de contrato do backend nulo para passar.
+Nada a desfazer: a árvore está limpa e o CI verde.
+
+**O primeiro passo não é código: é decidir o ambiente gráfico.** Ver a direção
+preferida registrada em [RISCOS.md](RISCOS.md), R01.
+
+Com o ambiente resolvido, a sequência que fecha a Fase 3:
+
+1. Implementar `krateus-rhi-wgpu`, com todo o `wgpu` isolado nessa crate — a
+   regra de CI que verifica isso já existe.
+2. Criar janela, surface, adapter e device.
+3. Renderizar um triângulo colorido.
+4. Validar resize, alt-tab e apresentação contínua.
+5. Rodar os 25 testes de contrato que o `NullRhi` já definiu contra o backend
+   real.
+
+Passando isso, a Fase 3 fecha. A Fase 4 então integra o Render World — que já
+está pronto e testado — ao backend real, e passa a desenhar malhas e instâncias
+de verdade.
 
 ---
 

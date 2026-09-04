@@ -129,6 +129,20 @@ por CI.
 **Decisão pendente do responsável pela máquina.** Nada foi alterado: o
 certificado de teste foi removido e nenhuma política foi tocada.
 
+### Direção preferida, registrada em 2026-09-04
+
+O responsável pela máquina indicou preferência pela opção 2: **manter o SAC
+ligado** e usar uma máquina ou instalação Windows dedicada ao desenvolvimento
+com GPU.
+
+Desativar o SAC continua sendo uma saída válida, mas só faz sentido com a
+aceitação consciente de que é irreversível sem reinstalar o Windows. Isso não é
+um detalhe de configuração: é a diferença entre uma escolha reversível e uma que
+custa uma reinstalação para desfazer.
+
+Nada foi decidido em definitivo — o registro existe para que a preferência não se
+perca junto com a conversa em que foi dita.
+
 ---
 
 ## R02 — Determinismo em ponto flutuante entre plataformas

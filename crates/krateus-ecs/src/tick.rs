@@ -24,6 +24,9 @@
 //! [`Tick::IDADE_MAXIMA`]. Um componente que nunca e tocado acabaria violando
 //! isso, e e para esse caso que existe [`Tick::saneia`].
 
+use std::cell::UnsafeCell;
+use std::ptr::NonNull;
+
 /// Instante logico, contado em execucoes de sistema.
 ///
 /// Nao tem relacao com tempo de relogio: avanca uma vez por sistema executado.
@@ -32,8 +35,16 @@
 pub struct Tick(u32);
 
 impl Tick {
-    /// Tick inicial de um mundo recem-criado.
+    /// Sentinela de "nunca".
+    ///
+    /// E o `last_run` de um sistema que ainda nao executou, e por isso **nao e**
+    /// o tick inicial do mundo: se fosse, um componente criado antes da primeira
+    /// execucao teria a mesma idade que o "nunca" e nao contaria como novo.
+    /// [`World::new`](crate::World::new) comeca em [`PRIMEIRO`](Self::PRIMEIRO).
     pub const ZERO: Self = Self(0);
+
+    /// Tick de um mundo recem-criado.
+    pub const PRIMEIRO: Self = Self(1);
 
     /// Maior idade que um tick guardado pode ter antes de a comparacao
     /// circular deixar de distinguir "velho" de "novo".
@@ -303,5 +314,102 @@ mod tests {
 
         assert!(t.saneia(agora));
         assert_eq!(t.changed.idade(agora), Tick::IDADE_MAXIMA, "o segundo precisa ser visitado");
+    }
+}
+
+/// Coluna de ticks, paralela a uma coluna de componentes.
+///
+/// O `UnsafeCell` existe pelo mesmo motivo dos recursos: durante uma subetapa
+/// paralela, o sistema que escreve um componente precisa carimbar o tick dele
+/// segurando apenas `&Archetype`. Derivar `&mut` de referencia compartilhada
+/// seria aliasing invalido; `UnsafeCell` e a carve-out exata para isso.
+///
+/// A exclusividade e por coluna, e vem do [`Access`](crate::Access): dois
+/// sistemas que escrevem o mesmo componente nunca rodam na mesma subetapa.
+#[derive(Debug, Default)]
+pub(crate) struct TickColumn {
+    valores: Vec<UnsafeCell<ComponentTicks>>,
+}
+
+// SAFETY: a API segura desta coluna exige `&mut self` para mutar; com apenas
+// `&TickColumn` nao ha como obter escrita. A unica porta e `base`, que devolve
+// ponteiro e cujo uso e `unsafe`.
+unsafe impl Sync for TickColumn {}
+
+impl TickColumn {
+    pub(crate) const fn new() -> Self {
+        Self { valores: Vec::new() }
+    }
+
+    /// Existe onde ha quem a chame: apenas em debug, pela verificacao de
+    /// invariante do archetype. O `cfg` e exatamente `debug_assertions`, e nao
+    /// `any(debug_assertions, test)`: um build de teste em release tem `test`
+    /// mas nao `debug_assertions`, e ai o metodo existiria sem chamador.
+    #[cfg(debug_assertions)]
+    pub(crate) fn len(&self) -> usize {
+        self.valores.len()
+    }
+
+    pub(crate) fn push(&mut self, t: ComponentTicks) {
+        self.valores.push(UnsafeCell::new(t));
+    }
+
+    pub(crate) fn reserve(&mut self, n: usize) {
+        self.valores.reserve(n);
+    }
+
+    pub(crate) fn swap_remove(&mut self, row: usize) {
+        self.valores.swap_remove(row);
+    }
+
+    pub(crate) fn get(&self, row: usize) -> Option<ComponentTicks> {
+        // `get_mut` nao serve aqui: `&self`. Ler pelo ponteiro e valido porque
+        // nenhuma escrita concorrente pode existir sem passar por `base`.
+        let celula = self.valores.get(row)?;
+        // SAFETY: `&self` implica que ninguem tem escrita pela API segura, e o
+        // contrato de `base` proibe escrita concorrente.
+        Some(unsafe { *celula.get() })
+    }
+
+    pub(crate) fn set(&mut self, row: usize, t: ComponentTicks) {
+        if let Some(celula) = self.valores.get_mut(row) {
+            *celula.get_mut() = t;
+        }
+    }
+
+    pub(crate) fn set_changed(&mut self, row: usize, tick: Tick) {
+        if let Some(celula) = self.valores.get_mut(row) {
+            celula.get_mut().changed = tick;
+        }
+    }
+
+    pub(crate) fn set_added(&mut self, row: usize, tick: Tick) {
+        if let Some(celula) = self.valores.get_mut(row) {
+            celula.get_mut().added = tick;
+        }
+    }
+
+    pub(crate) fn saneia(&mut self, agora: Tick) -> usize {
+        let mut ajustados = 0;
+        for celula in &mut self.valores {
+            if celula.get_mut().saneia(agora) {
+                ajustados += 1;
+            }
+        }
+        ajustados
+    }
+
+    /// Ponteiro para o inicio da coluna.
+    ///
+    /// Como em `Column::base`, o ponteiro carrega a proveniencia da alocacao, e
+    /// os elementos sao `UnsafeCell`, o que torna a escrita legitima mesmo tendo
+    /// partido de `&self`.
+    ///
+    /// # Safety
+    ///
+    /// Escrever pelo ponteiro exige que nenhum outro acesso a esta coluna esteja
+    /// ativo — garantia que o `Access` fornece ao scheduler.
+    pub(crate) fn base(&self) -> NonNull<UnsafeCell<ComponentTicks>> {
+        NonNull::from(self.valores.as_slice()).cast()
     }
 }

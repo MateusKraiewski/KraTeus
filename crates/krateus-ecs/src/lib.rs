@@ -53,7 +53,9 @@ pub use bundle::Bundle;
 pub use commands::Commands;
 pub use component::{Component, ComponentId, ComponentInfo, Components};
 pub use entity::{Entities, Entity, EntityLocation};
-pub use query::{Query, QueryData, QueryFilter, QueryIter, QueryState, With, Without};
+pub use query::{
+    Added, Changed, Query, QueryData, QueryFilter, QueryIter, QueryState, With, Without,
+};
 pub use resource::{Resource, ResourceId, Resources};
 pub use schedule::Schedule;
 pub use system::{

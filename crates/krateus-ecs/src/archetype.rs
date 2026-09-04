@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use crate::column::Column;
 use crate::component::{ComponentId, Components};
 use crate::entity::Entity;
-use crate::tick::{ComponentTicks, Tick};
+use crate::tick::{ComponentTicks, Tick, TickColumn};
 
 /// Identificador denso de um archetype dentro de um [`World`](crate::World).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -64,7 +64,7 @@ pub struct Archetype {
     /// linha. Fica fora de `Column` de proposito — ver a D10. Manter aqui deixa
     /// intocado o modulo que concentra o `unsafe`, e evita que quem nao filtra
     /// por mudanca arraste os ticks para o cache.
-    ticks: Box<[Vec<ComponentTicks>]>,
+    ticks: Box<[TickColumn]>,
     entities: Vec<Entity>,
 }
 
@@ -80,7 +80,7 @@ impl Archetype {
             })
             .collect();
 
-        let ticks = (0..components.len()).map(|_| Vec::new()).collect();
+        let ticks = (0..components.len()).map(|_| TickColumn::new()).collect();
         Self { id, components, columns, ticks, entities: Vec::new() }
     }
 
@@ -200,15 +200,24 @@ impl Archetype {
     #[must_use]
     pub fn component_ticks(&self, id: ComponentId, row: usize) -> Option<ComponentTicks> {
         let i = self.column_index(id)?;
-        self.ticks[i].get(row).copied()
+        self.ticks[i].get(row)
+    }
+
+    /// Ponteiro para o inicio da coluna de ticks de indice `i`.
+    ///
+    /// Usado pelas queries: `&mut T` carimba o tick da linha que entrega, e os
+    /// filtros de mudanca leem o tick sem materializar referencia.
+    pub(crate) fn ticks_base(
+        &self,
+        i: usize,
+    ) -> std::ptr::NonNull<std::cell::UnsafeCell<ComponentTicks>> {
+        self.ticks[i].base()
     }
 
     /// Marca o componente `id` da linha `row` como exposto para escrita.
     pub(crate) fn marcar_alterado(&mut self, id: ComponentId, row: usize, tick: Tick) {
-        if let Some(i) = self.column_index(id)
-            && let Some(t) = self.ticks[i].get_mut(row)
-        {
-            t.changed = tick;
+        if let Some(i) = self.column_index(id) {
+            self.ticks[i].set_changed(row, tick);
         }
     }
 
@@ -217,10 +226,8 @@ impl Archetype {
     /// Usado por `World::insert` quando o valor e substituido: sobrescrever nao
     /// faz o componente nascer de novo.
     pub(crate) fn restaurar_added(&mut self, id: ComponentId, row: usize, added: Tick) {
-        if let Some(i) = self.column_index(id)
-            && let Some(t) = self.ticks[i].get_mut(row)
-        {
-            t.added = added;
+        if let Some(i) = self.column_index(id) {
+            self.ticks[i].set_added(row, added);
         }
     }
 
@@ -228,15 +235,7 @@ impl Archetype {
     ///
     /// Conta instancias de componente ajustadas, nao ticks individuais.
     pub(crate) fn saneia_ticks(&mut self, agora: Tick) -> usize {
-        let mut ajustados = 0;
-        for coluna in &mut self.ticks {
-            for t in coluna.iter_mut() {
-                if t.saneia(agora) {
-                    ajustados += 1;
-                }
-            }
-        }
-        ajustados
+        self.ticks.iter_mut().map(|c| c.saneia(agora)).sum()
     }
 
     /// Remove a linha `row`, destruindo os componentes dela.
@@ -305,7 +304,8 @@ pub(crate) fn move_row(
             let j = destino.column_index(cid).expect("contains acabou de confirmar");
             // Migrar de archetype nao e alterar o componente: os ticks vao
             // junto com o valor.
-            destino.ticks[j][novo_row] = origem.ticks[i][row];
+            let carregados = origem.ticks[i].get(row).expect("linha valida na origem");
+            destino.ticks[j].set(novo_row, carregados);
             // SAFETY: `push_uninit` devolve um slot nao inicializado com o
             // tamanho e o alinhamento do componente `cid`, e as duas colunas
             // guardam exatamente esse tipo. `swap_remove_move` escreve um valor

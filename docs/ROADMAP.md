@@ -71,7 +71,7 @@ qualidade travadas antes de haver código para consertar.
 
 ---
 
-## Fase 2 — ECS, jobs e loop de simulação 🚧
+## Fase 2 — ECS, jobs e loop de simulação ✅
 
 **Objetivo.** O coração do §5. É a fase mais cara de errar (ver D02).
 
@@ -88,7 +88,10 @@ qualidade travadas antes de haver código para consertar.
 - ✅ **Benchmarks** `benches/ecs.rs` cobrindo o critério de 1M de entidades,
   spawn/despawn em regime permanente e iteração fragmentada em dois archetypes.
   Rodam no CI Linux ([R01](RISCOS.md)).
-- ⬜ Change detection (`Changed<T>`)
+- ✅ **Change detection:** ticks por instância de componente em array paralelo
+  (fora do `Column`), filtros `Changed<T>` / `Added<T>` avaliados por linha, e
+  ticks distribuídos pelo scheduler a partir da ordem determinística — nunca de
+  contador atômico. Ver [D10](DECISOES.md).
 - ✅ **Recursos globais:** dados únicos do mundo (tempo, gravidade, entrada),
   com espaço de identificadores próprio. `Access` passou a ter dois espaços
   separados — um componente `Posicao` e um recurso `Posicao` não conflitam.

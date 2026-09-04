@@ -228,13 +228,24 @@ impl Schedule {
     pub fn run(&mut self, world: &mut World) {
         self.exigir_inicializado();
 
+        let base = world.change_tick();
+        let mut offset = 0_u32;
+
         for etapa in &mut self.etapas {
             for i in 0..etapa.sistemas.len() {
+                let atual = base.adiantado(offset + i as u32 + 1);
                 let cell = WorldCell::new(world);
                 // SAFETY: execucao sequencial — nenhum outro sistema esta em
                 // andamento, entao nao ha conflito possivel.
-                unsafe { etapa.sistemas[i].run(cell) };
+                unsafe { etapa.sistemas[i].run(cell, atual) };
             }
+            offset += etapa.sistemas.len() as u32;
+            // O contador avanca antes dos comandos, e nao depois: o que eles
+            // criam acontece *apos* os sistemas desta etapa, e precisa carregar
+            // um tick que o proximo sistema reconheca como novo. Avancar depois
+            // faria uma entidade recem-criada nascer com o tick de antes do
+            // passo, invisivel para `Added`.
+            world.set_change_tick(base.adiantado(offset));
             aplicar_diferidos(etapa, world);
         }
     }
@@ -248,6 +259,9 @@ impl Schedule {
     pub fn run_parallel(&mut self, world: &mut World, pool: &JobPool) {
         self.exigir_inicializado();
 
+        let base = world.change_tick();
+        let mut offset = 0_u32;
+
         for etapa in &mut self.etapas {
             for si in 0..etapa.subetapas.len() {
                 let cell = WorldCell::new(world);
@@ -255,27 +269,32 @@ impl Schedule {
 
                 // Emprestimos mutaveis disjuntos: cada sistema aparece em
                 // exatamente uma subetapa, entao os indices nao se repetem.
-                let selecionados: Vec<&mut Box<dyn System>> = etapa
+                // O indice vai junto porque e dele que sai o tick: a posicao na
+                // ordem de insercao, e nao a ordem de execucao, que varia.
+                let selecionados: Vec<(usize, &mut Box<dyn System>)> = etapa
                     .sistemas
                     .iter_mut()
                     .enumerate()
                     .filter(|(i, _)| alvo.contains(i))
-                    .map(|(_, s)| s)
                     .collect();
 
                 pool.scope(|escopo| {
-                    for sistema in selecionados {
+                    for (i, sistema) in selecionados {
+                        let atual = base.adiantado(offset + i as u32 + 1);
                         escopo.spawn(move || {
                             // SAFETY: os sistemas desta subetapa tem acessos
                             // mutuamente compativeis — foi essa a condicao para
                             // ficarem juntos. Nenhum sistema de outra subetapa
                             // roda ao mesmo tempo, porque `scope` so retorna
                             // quando todos terminam.
-                            unsafe { sistema.run(cell) };
+                            unsafe { sistema.run(cell, atual) };
                         });
                     }
                 });
             }
+            offset += etapa.sistemas.len() as u32;
+            // Ver o comentario em `run`.
+            world.set_change_tick(base.adiantado(offset));
             aplicar_diferidos(etapa, world);
         }
     }
@@ -320,7 +339,7 @@ impl std::fmt::Debug for Schedule {
 mod tests {
     use super::*;
     use crate::system::{Res, ResMut};
-    use crate::{Commands, Entity, Query};
+    use crate::{Added, Changed, Commands, Entity, Query};
 
     #[derive(Debug, PartialEq)]
     struct Posicao(f32);
@@ -585,6 +604,142 @@ mod tests {
         assert_eq!(nomes.len(), 1);
         assert_eq!(nomes[0].len(), 2);
         assert!(nomes[0][0].contains("mover"));
+    }
+
+    // ---------------------------------------------------- deteccao de mudanca --
+
+    #[test]
+    fn sistema_ve_o_que_mudou_desde_a_execucao_anterior() {
+        fn tocar_um(mut q: Query<&mut Posicao>) {
+            if let Some(p) = q.iter().next() {
+                p.0 += 1.0;
+            }
+        }
+        fn contar_mudados(mut q: Query<&Posicao, Changed<Posicao>>, mut n: ResMut<Quadros>) {
+            n.0 = u32::try_from(q.iter().count()).unwrap();
+        }
+
+        let mut w = mundo_base();
+        for i in 0..5 {
+            w.spawn((Posicao(i as f32),));
+        }
+
+        let mut s = Schedule::new();
+        s.add_stage("simulacao");
+        s.add_system("simulacao", tocar_um);
+        s.add_system("simulacao", contar_mudados);
+        s.initialize(&mut w);
+
+        // Primeiro passo: para o contador, tudo e novo — ele nunca rodou antes.
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 5);
+
+        // Segundo passo: so a entidade que `tocar_um` escreveu.
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 1);
+
+        // Terceiro: idem, o estado nao acumula.
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 1);
+    }
+
+    #[test]
+    fn sistema_que_nada_toca_nao_ve_mudanca() {
+        fn contar_mudados(mut q: Query<&Posicao, Changed<Posicao>>, mut n: ResMut<Quadros>) {
+            n.0 = u32::try_from(q.iter().count()).unwrap();
+        }
+
+        let mut w = mundo_base();
+        w.spawn((Posicao(1.0),));
+
+        let mut s = Schedule::new();
+        s.add_stage("simulacao");
+        s.add_system("simulacao", contar_mudados);
+        s.initialize(&mut w);
+
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 1, "na primeira execucao tudo e novo");
+
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 0);
+    }
+
+    #[test]
+    fn changed_declara_leitura_e_serializa_contra_quem_escreve() {
+        fn escreve(mut q: Query<&mut Posicao>) {
+            for p in q.iter() {
+                p.0 += 1.0;
+            }
+        }
+        fn le_mudancas(mut q: Query<&Posicao, Changed<Posicao>>) {
+            let _ = q.iter().count();
+        }
+
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("simulacao");
+        s.add_system("simulacao", escreve);
+        s.add_system("simulacao", le_mudancas);
+        s.initialize(&mut w);
+
+        assert_eq!(
+            s.batches("simulacao").unwrap().len(),
+            2,
+            "o filtro le a coluna de ticks, que o outro sistema escreve"
+        );
+    }
+
+    #[test]
+    fn ticks_atribuidos_pelo_schedule_sao_deterministicos() {
+        let executar = |paralelo: bool| {
+            let mut w = mundo_base();
+            for i in 0..50 {
+                w.spawn((Posicao(i as f32), Velocidade(1.0)));
+            }
+            let mut s = Schedule::new();
+            s.add_stage("simulacao");
+            s.add_system("simulacao", mover);
+            s.add_system("simulacao", danificar);
+            s.initialize(&mut w);
+
+            let pool = JobPool::new(3);
+            for _ in 0..10 {
+                if paralelo {
+                    s.run_parallel(&mut w, &pool);
+                } else {
+                    s.run(&mut w);
+                }
+            }
+            w.change_tick().get()
+        };
+
+        assert_eq!(executar(false), executar(true), "o tick nao pode depender da ordem real");
+        assert_eq!(executar(true), executar(true));
+    }
+
+    #[test]
+    fn added_ve_entidades_criadas_por_comando_na_etapa_anterior() {
+        fn nascer(cmds: &mut Commands) {
+            cmds.spawn((Posicao(1.0),));
+        }
+        fn contar_novas(mut q: Query<&Posicao, Added<Posicao>>, mut n: ResMut<Quadros>) {
+            n.0 = u32::try_from(q.iter().count()).unwrap();
+        }
+
+        let mut w = mundo_base();
+        let mut s = Schedule::new();
+        s.add_stage("criacao").add_stage("contagem");
+        s.add_system("criacao", nascer);
+        s.add_system("contagem", contar_novas);
+        s.initialize(&mut w);
+
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 1);
+
+        // No passo seguinte, a de antes nao e mais nova; a recem-criada e.
+        s.run(&mut w);
+        assert_eq!(w.resource::<Quadros>().0, 1);
+        assert_eq!(w.len(), 2);
     }
 
     #[test]

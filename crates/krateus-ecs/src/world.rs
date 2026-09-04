@@ -19,10 +19,10 @@ use crate::component::{Component, ComponentId, Components};
 use crate::entity::{Entities, Entity, EntityLocation};
 use crate::query::{QueryData, QueryFilter, QueryIter};
 use crate::resource::{Resource, Resources};
-use crate::tick::{ComponentTicks, Tick};
+use crate::tick::{ComponentTicks, SystemTicks, Tick};
 
 /// Armazenamento de entidades e componentes.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct World {
     entities: Entities,
     archetypes: Archetypes,
@@ -38,6 +38,14 @@ pub struct World {
     change_tick: Tick,
 }
 
+impl Default for World {
+    fn default() -> Self {
+        // Manual: o `change_tick` comeca em `PRIMEIRO`, e nao no `Default` de
+        // `Tick`, que e o sentinela de "nunca".
+        Self::new()
+    }
+}
+
 impl World {
     /// Cria um mundo vazio.
     #[must_use]
@@ -49,7 +57,7 @@ impl World {
             resources: Resources::new(),
             decl: Vec::new(),
             sig: Vec::new(),
-            change_tick: Tick::ZERO,
+            change_tick: Tick::PRIMEIRO,
         }
     }
 
@@ -452,6 +460,19 @@ impl World {
     ///
     /// Nas mesmas condicoes de [`query`](Self::query).
     pub fn query_filtered<D: QueryData, F: QueryFilter>(&mut self) -> QueryIter<'_, D, F> {
+        self.query_filtered_since::<D, F>(Tick::ZERO)
+    }
+
+    /// Como [`query_filtered`](Self::query_filtered), com `last_run` explicito.
+    ///
+    /// Filtros de mudanca comparam contra `last_run`. As versoes sem este
+    /// parametro usam [`Tick::ZERO`], o que faz `Changed` e `Added` aceitarem
+    /// tudo o que ja existiu — util fora de um sistema, onde nao ha "ultima
+    /// execucao" natural.
+    pub fn query_filtered_since<D: QueryData, F: QueryFilter>(
+        &mut self,
+        last_run: Tick,
+    ) -> QueryIter<'_, D, F> {
         // Registrar os componentes da query antes de olhar os archetypes faz
         // com que um tipo ainda desconhecido passe a existir no registro. Assim
         // uma query sobre um componente que ninguem usou simplesmente nao casa
@@ -460,9 +481,10 @@ impl World {
         // Os dois emprestimos sao de campos distintos: o mutavel de
         // `components` termina dentro de `QueryIter::new`, e so o compartilhado
         // de `archetypes` sobrevive junto com a query.
+        let ticks = SystemTicks::new(last_run, self.change_tick);
         let components = &mut self.components;
         let archetypes = &self.archetypes;
-        QueryIter::new(archetypes, components)
+        QueryIter::new(archetypes, components, ticks)
     }
 
     /// Reserva espaco para `n` entidades no archetype de uma assinatura ja

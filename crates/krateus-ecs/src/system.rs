@@ -6,7 +6,7 @@
 //! (secao 5 do documento de visao).
 //!
 //! ```
-//! use krateus_ecs::{Commands, IntoSystem, Query, Res, ResMut, System, World, WorldCell};
+//! use krateus_ecs::{IntoSystem, Query, Res, ResMut, System, Tick, World, WorldCell};
 //!
 //! struct Posicao(f32);
 //! struct Velocidade(f32);
@@ -36,11 +36,13 @@
 //! // Os dois nao conflitam: um escreve Posicao, o outro escreve Contador.
 //! assert!(s1.access().compatible_with(s2.access()));
 //!
+//! // Ticks distintos e crescentes: e o scheduler que os distribui na pratica,
+//! // a partir da posicao de cada sistema na ordem deterministica.
 //! let cell = WorldCell::new(&mut world);
 //! // SAFETY: execucao sequencial, uma de cada vez.
 //! unsafe {
-//!     s1.run(cell);
-//!     s2.run(cell);
+//!     s1.run(cell, Tick::new(1));
+//!     s2.run(cell, Tick::new(2));
 //! }
 //!
 //! assert_eq!(world.query::<&Posicao>().next().map(|p| p.0), Some(2.0));
@@ -54,6 +56,7 @@ use crate::access::Access;
 use crate::commands::Commands;
 use crate::query::{Query, QueryData, QueryFilter, QueryState};
 use crate::resource::{Resource, ResourceId};
+use crate::tick::{SystemTicks, Tick};
 use crate::world::World;
 use crate::world_cell::WorldCell;
 
@@ -95,8 +98,11 @@ pub unsafe trait SystemParam {
     ///
     /// Nenhum acesso que conflite com o declarado em
     /// [`access`](SystemParam::access) pode estar ativo.
-    unsafe fn fetch<'w, 's>(state: &'s mut Self::State, world: WorldCell<'w>)
-    -> Self::Item<'w, 's>;
+    unsafe fn fetch<'w, 's>(
+        state: &'s mut Self::State,
+        world: WorldCell<'w>,
+        ticks: SystemTicks,
+    ) -> Self::Item<'w, 's>;
 }
 
 // ---------------------------------------------------------------- Commands --
@@ -117,7 +123,11 @@ unsafe impl SystemParam for &mut Commands {
         state.apply(world);
     }
 
-    unsafe fn fetch<'w, 's>(state: &'s mut Self::State, _: WorldCell<'w>) -> Self::Item<'w, 's> {
+    unsafe fn fetch<'w, 's>(
+        state: &'s mut Self::State,
+        _: WorldCell<'w>,
+        _: SystemTicks,
+    ) -> Self::Item<'w, 's> {
         state
     }
 }
@@ -158,7 +168,11 @@ unsafe impl<'a, R: Resource> SystemParam for Res<'a, R> {
         out.add_resource_read(*state);
     }
 
-    unsafe fn fetch<'w, 's>(_: &'s mut Self::State, world: WorldCell<'w>) -> Self::Item<'w, 's> {
+    unsafe fn fetch<'w, 's>(
+        _: &'s mut Self::State,
+        world: WorldCell<'w>,
+        _: SystemTicks,
+    ) -> Self::Item<'w, 's> {
         // SAFETY: o contrato garante que nenhuma escrita a `R` esta ativa.
         let mundo = unsafe { world.world() };
         let valor = mundo.get_resource::<R>().unwrap_or_else(|| {
@@ -211,7 +225,11 @@ unsafe impl<'a, R: Resource> SystemParam for ResMut<'a, R> {
         out.add_resource_write(*state);
     }
 
-    unsafe fn fetch<'w, 's>(_: &'s mut Self::State, world: WorldCell<'w>) -> Self::Item<'w, 's> {
+    unsafe fn fetch<'w, 's>(
+        _: &'s mut Self::State,
+        world: WorldCell<'w>,
+        _: SystemTicks,
+    ) -> Self::Item<'w, 's> {
         // SAFETY: o contrato de `fetch` garante que nada conflitante com o
         // acesso declarado esta ativo.
         let mundo = unsafe { world.world() };
@@ -250,12 +268,13 @@ unsafe impl<'a, 'b, D: QueryData + 'static, F: QueryFilter + 'static> SystemPara
     unsafe fn fetch<'w, 's>(
         state: &'s mut Self::State,
         world: WorldCell<'w>,
+        ticks: SystemTicks,
     ) -> Self::Item<'w, 's> {
         // SAFETY: o contrato garante que nada conflitante esta ativo. A query
         // so precisa de acesso compartilhado a estrutura dos archetypes; as
         // referencias mutaveis a componentes vem da proveniencia das colunas.
         let mundo = unsafe { world.world() };
-        Query::new(mundo.archetypes(), state)
+        Query::new(mundo.archetypes(), state, ticks)
     }
 }
 
@@ -283,11 +302,12 @@ macro_rules! impl_system_param_tupla {
             unsafe fn fetch<'w, 's>(
                 state: &'s mut Self::State,
                 world: WorldCell<'w>,
+                ticks: SystemTicks,
             ) -> Self::Item<'w, 's> {
                 // SAFETY: o contrato foi cumprido por quem chamou, e os
                 // parametros de um mesmo sistema tem acessos compativeis entre
                 // si — verificado na construcao do sistema.
-                unsafe { ($($P::fetch(&mut state.$i, world),)*) }
+                unsafe { ($($P::fetch(&mut state.$i, world, ticks),)*) }
             }
         }
     };
@@ -300,7 +320,12 @@ unsafe impl SystemParam for () {
 
     fn init(_: &mut World) -> Self::State {}
     fn access(_: &Self::State, _: &mut Access) {}
-    unsafe fn fetch<'w, 's>(_: &'s mut Self::State, _: WorldCell<'w>) -> Self::Item<'w, 's> {}
+    unsafe fn fetch<'w, 's>(
+        _: &'s mut Self::State,
+        _: WorldCell<'w>,
+        _: SystemTicks,
+    ) -> Self::Item<'w, 's> {
+    }
 }
 
 impl_system_param_tupla!((A, 0));
@@ -331,7 +356,11 @@ pub trait System: Send + Sync + 'static {
     ///
     /// Nenhum outro sistema com acesso conflitante pode estar em execucao, e
     /// [`initialize`](System::initialize) precisa ter sido chamado.
-    unsafe fn run(&mut self, world: WorldCell<'_>);
+    ///
+    /// `atual` e o tick desta execucao, atribuido pelo scheduler a partir da
+    /// posicao do sistema na ordem deterministica — nunca de um contador
+    /// atomico, que faria os ticks gravados variarem entre execucoes (D10).
+    unsafe fn run(&mut self, world: WorldCell<'_>, atual: Tick);
 
     /// Aplica o que os parametros acumularam — na pratica, o command buffer.
     ///
@@ -347,6 +376,9 @@ where
     func: Func,
     estado: Option<<Func::Param as SystemParam>::State>,
     acesso: Access,
+    /// Tick da execucao anterior deste sistema. Comeca em zero, entao na
+    /// primeira execucao tudo o que existe conta como novo.
+    last_run: Tick,
     _marker: PhantomData<fn() -> Marker>,
 }
 
@@ -376,15 +408,18 @@ where
         &self.acesso
     }
 
-    unsafe fn run(&mut self, world: WorldCell<'_>) {
+    unsafe fn run(&mut self, world: WorldCell<'_>, atual: Tick) {
+        let ticks = SystemTicks::new(self.last_run, atual);
         let estado = self.estado.as_mut().unwrap_or_else(|| {
             panic!("sistema {} nao foi inicializado", std::any::type_name::<Func>())
         });
 
         // SAFETY: o contrato de `System::run` transfere para quem chama a
         // garantia de que nada conflitante esta ativo.
-        let param = unsafe { <Func::Param as SystemParam>::fetch(estado, world) };
+        let param = unsafe { <Func::Param as SystemParam>::fetch(estado, world, ticks) };
         self.func.executar(param);
+
+        self.last_run = atual;
     }
 
     fn apply_deferred(&mut self, world: &mut World) {
@@ -423,7 +458,13 @@ where
     type System = FunctionSystem<Func, Marker>;
 
     fn into_system(self) -> Self::System {
-        FunctionSystem { func: self, estado: None, acesso: Access::new(), _marker: PhantomData }
+        FunctionSystem {
+            func: self,
+            estado: None,
+            acesso: Access::new(),
+            last_run: Tick::ZERO,
+            _marker: PhantomData,
+        }
     }
 }
 

@@ -38,7 +38,19 @@
 //!    o mesmo componente de forma incompativel. Duas linhas diferentes da mesma
 //!    coluna tambem nao se sobrepoem, e a iteracao nunca visita a mesma linha
 //!    duas vezes.
+//!
+//! # Deteccao de mudanca
+//!
+//! Pedir `&mut T` **carimba** a linha como alterada, tenha o valor mudado ou
+//! nao: o contrato e "foi exposto para escrita" (ver D10 em
+//! `docs/DECISOES.md`). [`Changed`] e [`Added`] leem esse carimbo.
+//!
+//! Ao contrario de [`With`] e [`Without`], que decidem por archetype, os
+//! filtros de mudanca decidem **por linha**. O iterador so paga por isso quando
+//! ha algum: [`QueryFilter::POR_LINHA`] e uma constante, e o desvio some da
+//! compilacao quando ninguem precisa dele.
 
+use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -46,6 +58,7 @@ use crate::access::{Access, Conflict};
 use crate::archetype::{Archetype, ArchetypeId, Archetypes};
 use crate::component::{Component, ComponentId, Components};
 use crate::entity::Entity;
+use crate::tick::{ComponentTicks, SystemTicks, Tick};
 
 /// Ponteiro para o inicio de uma coluna, com o tempo de vida do archetype.
 pub struct ColumnBase<'w, T> {
@@ -62,6 +75,47 @@ impl<T> Clone for ColumnBase<'_, T> {
 }
 
 impl<T> Copy for ColumnBase<'_, T> {}
+
+/// Ponteiros de uma coluna aberta para escrita: os valores e os ticks.
+///
+/// Carrega o tick da execucao corrente porque entregar `&mut T` carimba a linha
+/// como alterada — o contrato da D10 e "foi exposto para escrita".
+pub struct WriteBase<'w, T> {
+    valores: NonNull<T>,
+    ticks: NonNull<UnsafeCell<ComponentTicks>>,
+    atual: Tick,
+    _marker: PhantomData<&'w [T]>,
+}
+
+impl<T> Clone for WriteBase<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for WriteBase<'_, T> {}
+
+/// Ponteiro para uma coluna de ticks, para os filtros de mudanca.
+#[derive(Clone, Copy)]
+pub struct TicksBase<'w> {
+    base: NonNull<UnsafeCell<ComponentTicks>>,
+    _marker: PhantomData<&'w [ComponentTicks]>,
+}
+
+impl TicksBase<'_> {
+    /// Le os ticks da linha `row`.
+    ///
+    /// # Safety
+    ///
+    /// `row` precisa estar dentro do archetype de onde este ponteiro veio, e
+    /// nenhuma escrita concorrente pode estar ativa sobre esta coluna.
+    #[inline]
+    unsafe fn ler(self, row: usize) -> ComponentTicks {
+        // SAFETY: o contrato garante `row` valido e ausencia de escrita
+        // concorrente; a coluna existe enquanto `'w` durar.
+        unsafe { *UnsafeCell::raw_get(self.base.as_ptr().add(row)) }
+    }
+}
 
 /// O que uma query le de cada entidade.
 ///
@@ -112,7 +166,11 @@ pub unsafe trait QueryData {
     /// # Safety
     ///
     /// `archetype` precisa ter sido aceito por [`matches`](QueryData::matches).
-    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w>;
+    unsafe fn init_fetch<'w>(
+        state: &Self::State,
+        archetype: &'w Archetype,
+        ticks: SystemTicks,
+    ) -> Self::Fetch<'w>;
 
     /// Le a linha `row`.
     ///
@@ -140,7 +198,11 @@ unsafe impl QueryData for Entity {
         true
     }
 
-    unsafe fn init_fetch<'w>(_: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
+    unsafe fn init_fetch<'w>(
+        _: &Self::State,
+        archetype: &'w Archetype,
+        _: SystemTicks,
+    ) -> Self::Fetch<'w> {
         archetype.entities()
     }
 
@@ -171,7 +233,11 @@ unsafe impl<T: Component> QueryData for &T {
         archetype.contains(*state)
     }
 
-    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
+    unsafe fn init_fetch<'w>(
+        state: &Self::State,
+        archetype: &'w Archetype,
+        _: SystemTicks,
+    ) -> Self::Fetch<'w> {
         let coluna = archetype.column(*state).expect("matches aceitou este archetype");
         ColumnBase { base: coluna.base().cast::<T>(), _marker: PhantomData }
     }
@@ -191,7 +257,7 @@ unsafe impl<T: Component> QueryData for &T {
 unsafe impl<T: Component> QueryData for &mut T {
     type Item<'w> = &'w mut T;
     type State = ComponentId;
-    type Fetch<'w> = ColumnBase<'w, T>;
+    type Fetch<'w> = WriteBase<'w, T>;
 
     fn init_state(components: &mut Components) -> ComponentId {
         components.register::<T>()
@@ -205,15 +271,33 @@ unsafe impl<T: Component> QueryData for &mut T {
         archetype.contains(*state)
     }
 
-    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
+    unsafe fn init_fetch<'w>(
+        state: &Self::State,
+        archetype: &'w Archetype,
+        ticks: SystemTicks,
+    ) -> Self::Fetch<'w> {
+        let i = archetype.column_index(*state).expect("matches aceitou este archetype");
         let coluna = archetype.column(*state).expect("matches aceitou este archetype");
-        ColumnBase { base: coluna.base().cast::<T>(), _marker: PhantomData }
+        WriteBase {
+            valores: coluna.base().cast::<T>(),
+            ticks: archetype.ticks_base(i),
+            atual: ticks.atual,
+            _marker: PhantomData,
+        }
     }
 
     unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
+        // SAFETY: `row` e valido pelo contrato, e a coluna de ticks tem uma
+        // entrada por linha. O ponteiro vem de `UnsafeCell`, entao escrever por
+        // ele a partir de `&Archetype` e legitimo; a exclusividade sobre esta
+        // coluna e a mesma que autoriza o `&mut T` abaixo.
+        unsafe {
+            (*UnsafeCell::raw_get(fetch.ticks.as_ptr().add(row))).changed = fetch.atual;
+        }
+
         // SAFETY: ver o comentario da implementacao. Nenhuma outra referencia
         // viva alcanca esta linha desta coluna.
-        unsafe { &mut *fetch.base.as_ptr().add(row) }
+        unsafe { &mut *fetch.valores.as_ptr().add(row) }
     }
 }
 
@@ -242,9 +326,10 @@ macro_rules! impl_query_data_tupla {
             unsafe fn init_fetch<'w>(
                 state: &Self::State,
                 archetype: &'w Archetype,
+                ticks: SystemTicks,
             ) -> Self::Fetch<'w> {
                 // SAFETY: `matches` aceitou, logo aceitou para cada elemento.
-                unsafe { ($($D::init_fetch(&state.$i, archetype),)+) }
+                unsafe { ($($D::init_fetch(&state.$i, archetype, ticks),)+) }
             }
 
             unsafe fn fetch<'w>(fetch: Self::Fetch<'w>, row: usize) -> Self::Item<'w> {
@@ -264,25 +349,76 @@ impl_query_data_tupla!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5));
 impl_query_data_tupla!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6));
 impl_query_data_tupla!((A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 7));
 
-/// Condicao que um archetype precisa satisfazer, sem que nada seja lido dele.
-pub trait QueryFilter {
+/// Condicao que uma entidade precisa satisfazer para entrar na iteracao.
+///
+/// Ha dois niveis. `With` e `Without` decidem **por archetype**: o conjunto
+/// inteiro passa ou nao passa, e a iteracao nem chega a olhar linha por linha.
+/// `Changed` e `Added` precisam decidir **por linha**, porque duas entidades do
+/// mesmo archetype podem ter historias diferentes.
+///
+/// [`POR_LINHA`](QueryFilter::POR_LINHA) diz de qual tipo o filtro e. Quando
+/// nenhum filtro exige avaliacao por linha, o iterador pula a checagem inteira —
+/// e a diferenca entre o caso comum nao pagar nada e pagar um desvio por
+/// entidade.
+///
+/// # Safety
+///
+/// Como em [`QueryData`], `access` precisa declarar o que `filter_fetch` le, e
+/// `init_fetch` so pode ser chamado sobre archetype aceito por `matches`.
+pub unsafe trait QueryFilter {
     /// Dados resolvidos uma vez por query.
     type State: Send + Sync + Clone + 'static;
+    /// Ponteiros resolvidos uma vez por archetype.
+    type Fetch<'w>: Copy;
+
+    /// Se este filtro precisa ser avaliado linha a linha.
+    const POR_LINHA: bool;
 
     /// Registra os componentes envolvidos e devolve o estado do filtro.
     fn init_state(components: &mut Components) -> Self::State;
 
+    /// Declara o que o filtro le.
+    ///
+    /// `With` e `Without` nao declaram nada: so olham a assinatura do
+    /// archetype. `Changed` e `Added` declaram leitura do componente, porque
+    /// leem a coluna de ticks — que um sistema escritor escreve (D10).
+    fn access(state: &Self::State, out: &mut Access) {
+        let _ = (state, out);
+    }
+
     /// Indica se o archetype passa.
     fn matches(state: &Self::State, archetype: &Archetype) -> bool;
+
+    /// Resolve os ponteiros deste archetype.
+    ///
+    /// # Safety
+    ///
+    /// `archetype` precisa ter sido aceito por [`matches`](QueryFilter::matches).
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w>;
+
+    /// Indica se a linha passa.
+    ///
+    /// # Safety
+    ///
+    /// `row` precisa estar dentro do archetype passado a `init_fetch`.
+    unsafe fn filter_fetch<'w>(fetch: Self::Fetch<'w>, row: usize, ticks: SystemTicks) -> bool;
 }
 
-/// Filtro vazio: aceita todo archetype.
-impl QueryFilter for () {
+// SAFETY: nao le nada e aceita tudo.
+unsafe impl QueryFilter for () {
     type State = ();
+    type Fetch<'w> = ();
+    const POR_LINHA: bool = false;
 
     fn init_state(_: &mut Components) -> Self::State {}
 
     fn matches(_: &Self::State, _: &Archetype) -> bool {
+        true
+    }
+
+    unsafe fn init_fetch<'w>(_: &Self::State, _: &'w Archetype) -> Self::Fetch<'w> {}
+
+    unsafe fn filter_fetch<'w>(_: Self::Fetch<'w>, _: usize, _: SystemTicks) -> bool {
         true
     }
 }
@@ -293,8 +429,11 @@ impl QueryFilter for () {
 /// obrigar a query a devolver um `&Viva` que ninguem usaria.
 pub struct With<T>(PhantomData<fn() -> T>);
 
-impl<T: Component> QueryFilter for With<T> {
+// SAFETY: so consulta a assinatura do archetype; nao le dado nenhum.
+unsafe impl<T: Component> QueryFilter for With<T> {
     type State = ComponentId;
+    type Fetch<'w> = ();
+    const POR_LINHA: bool = false;
 
     fn init_state(components: &mut Components) -> ComponentId {
         components.register::<T>()
@@ -303,13 +442,22 @@ impl<T: Component> QueryFilter for With<T> {
     fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
         archetype.contains(*state)
     }
+
+    unsafe fn init_fetch<'w>(_: &Self::State, _: &'w Archetype) -> Self::Fetch<'w> {}
+
+    unsafe fn filter_fetch<'w>(_: Self::Fetch<'w>, _: usize, _: SystemTicks) -> bool {
+        true
+    }
 }
 
 /// Exige a ausencia de `T`.
 pub struct Without<T>(PhantomData<fn() -> T>);
 
-impl<T: Component> QueryFilter for Without<T> {
+// SAFETY: so consulta a assinatura do archetype; nao le dado nenhum.
+unsafe impl<T: Component> QueryFilter for Without<T> {
     type State = ComponentId;
+    type Fetch<'w> = ();
+    const POR_LINHA: bool = false;
 
     fn init_state(components: &mut Components) -> ComponentId {
         components.register::<T>()
@@ -318,19 +466,123 @@ impl<T: Component> QueryFilter for Without<T> {
     fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
         !archetype.contains(*state)
     }
+
+    unsafe fn init_fetch<'w>(_: &Self::State, _: &'w Archetype) -> Self::Fetch<'w> {}
+
+    unsafe fn filter_fetch<'w>(_: Self::Fetch<'w>, _: usize, _: SystemTicks) -> bool {
+        true
+    }
+}
+
+/// Aceita apenas entidades cujo `T` foi exposto para escrita desde a ultima
+/// execucao de quem pergunta.
+///
+/// **Exposto para escrita, nao necessariamente alterado.** Entregar `&mut T`
+/// carimba a linha, tenha o valor mudado ou nao; comparar valores custaria mais
+/// do que o filtro economiza. Ver a D10 em `docs/DECISOES.md`.
+///
+/// Inserir tambem conta como alterar, entao `Added<T>` implica `Changed<T>`.
+pub struct Changed<T>(PhantomData<fn() -> T>);
+
+// SAFETY: le a coluna de ticks de `T` e declara essa leitura no `access`, o que
+// impede o scheduler de rodar em paralelo com quem escreve `T`.
+unsafe impl<T: Component> QueryFilter for Changed<T> {
+    type State = ComponentId;
+    type Fetch<'w> = TicksBase<'w>;
+    const POR_LINHA: bool = true;
+
+    fn init_state(components: &mut Components) -> ComponentId {
+        components.register::<T>()
+    }
+
+    fn access(state: &Self::State, out: &mut Access) {
+        out.add_component_read(*state);
+    }
+
+    fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
+        archetype.contains(*state)
+    }
+
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
+        let i = archetype.column_index(*state).expect("matches aceitou este archetype");
+        TicksBase { base: archetype.ticks_base(i), _marker: PhantomData }
+    }
+
+    unsafe fn filter_fetch<'w>(fetch: Self::Fetch<'w>, row: usize, ticks: SystemTicks) -> bool {
+        // SAFETY: `row` e valido pelo contrato, e o acesso declarado impede
+        // escrita concorrente sobre esta coluna.
+        unsafe { fetch.ler(row) }.is_changed(ticks.last_run, ticks.atual)
+    }
+}
+
+/// Aceita apenas entidades que ganharam `T` desde a ultima execucao de quem
+/// pergunta.
+pub struct Added<T>(PhantomData<fn() -> T>);
+
+// SAFETY: como em [`Changed`].
+unsafe impl<T: Component> QueryFilter for Added<T> {
+    type State = ComponentId;
+    type Fetch<'w> = TicksBase<'w>;
+    const POR_LINHA: bool = true;
+
+    fn init_state(components: &mut Components) -> ComponentId {
+        components.register::<T>()
+    }
+
+    fn access(state: &Self::State, out: &mut Access) {
+        out.add_component_read(*state);
+    }
+
+    fn matches(state: &ComponentId, archetype: &Archetype) -> bool {
+        archetype.contains(*state)
+    }
+
+    unsafe fn init_fetch<'w>(state: &Self::State, archetype: &'w Archetype) -> Self::Fetch<'w> {
+        let i = archetype.column_index(*state).expect("matches aceitou este archetype");
+        TicksBase { base: archetype.ticks_base(i), _marker: PhantomData }
+    }
+
+    unsafe fn filter_fetch<'w>(fetch: Self::Fetch<'w>, row: usize, ticks: SystemTicks) -> bool {
+        // SAFETY: como em `Changed`.
+        unsafe { fetch.ler(row) }.is_added(ticks.last_run, ticks.atual)
+    }
 }
 
 macro_rules! impl_query_filter_tupla {
     ($(($F:ident, $i:tt)),+) => {
-        impl<$($F: QueryFilter),+> QueryFilter for ($($F,)+) {
+        // SAFETY: cada elemento cumpre o proprio contrato; a tupla so encaminha.
+        unsafe impl<$($F: QueryFilter),+> QueryFilter for ($($F,)+) {
             type State = ($($F::State,)+);
+            type Fetch<'w> = ($($F::Fetch<'w>,)+);
+            const POR_LINHA: bool = $($F::POR_LINHA)||+;
 
             fn init_state(components: &mut Components) -> Self::State {
                 ($($F::init_state(components),)+)
             }
 
+            fn access(state: &Self::State, out: &mut Access) {
+                $($F::access(&state.$i, out);)+
+            }
+
             fn matches(state: &Self::State, archetype: &Archetype) -> bool {
                 $($F::matches(&state.$i, archetype))&&+
+            }
+
+            unsafe fn init_fetch<'w>(
+                state: &Self::State,
+                archetype: &'w Archetype,
+            ) -> Self::Fetch<'w> {
+                // SAFETY: `matches` aceitou, logo aceitou para cada elemento.
+                unsafe { ($($F::init_fetch(&state.$i, archetype),)+) }
+            }
+
+            unsafe fn filter_fetch<'w>(
+                fetch: Self::Fetch<'w>,
+                row: usize,
+                ticks: SystemTicks,
+            ) -> bool {
+                // SAFETY: `row` valido pelo contrato, para todos os elementos.
+                unsafe { $($F::filter_fetch(fetch.$i, row, ticks))&&+ }
             }
         }
     };
@@ -349,13 +601,17 @@ impl_query_filter_tupla!((A, 0), (B, 1), (C, 2), (D, 3));
 pub struct QueryIter<'w, D: QueryData, F: QueryFilter = ()> {
     archetypes: &'w Archetypes,
     state: D::State,
+    filtro: F::State,
+    ticks: SystemTicks,
     correspondentes: Vec<ArchetypeId>,
     proximo: usize,
     fetch: Option<D::Fetch<'w>>,
+    fetch_filtro: Option<F::Fetch<'w>>,
     row: usize,
     len: usize,
+    /// Quantas entidades os archetypes correspondentes contem. E exato quando
+    /// nenhum filtro avalia por linha, e um limite superior quando algum avalia.
     restantes: usize,
-    _filtro: PhantomData<fn() -> F>,
 }
 
 impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
@@ -364,16 +620,24 @@ impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
     /// # Panics
     ///
     /// Se `D` pedir o mesmo componente de forma conflitante.
-    pub(crate) fn new(archetypes: &'w Archetypes, components: &mut Components) -> Self {
+    pub(crate) fn new(
+        archetypes: &'w Archetypes,
+        components: &mut Components,
+        ticks: SystemTicks,
+    ) -> Self {
         let estado = QueryState::<D, F>::new(components);
-        Self::from_state(archetypes, &estado)
+        Self::from_state(archetypes, &estado, ticks)
     }
 
     /// Monta a query a partir de um estado ja resolvido.
     ///
     /// E o caminho de um sistema, que resolve o estado uma vez na
     /// inicializacao e o reaproveita a cada passo.
-    pub(crate) fn from_state(archetypes: &'w Archetypes, estado: &QueryState<D, F>) -> Self {
+    pub(crate) fn from_state(
+        archetypes: &'w Archetypes,
+        estado: &QueryState<D, F>,
+        ticks: SystemTicks,
+    ) -> Self {
         let state = estado.data.clone();
         let filtro = estado.filtro.clone();
 
@@ -389,14 +653,25 @@ impl<'w, D: QueryData, F: QueryFilter> QueryIter<'w, D, F> {
         Self {
             archetypes,
             state,
+            filtro,
+            ticks,
             correspondentes,
             proximo: 0,
             fetch: None,
+            fetch_filtro: None,
             row: 0,
             len: 0,
             restantes,
-            _filtro: PhantomData,
         }
+    }
+
+    /// Limite superior de quantas entidades a iteracao pode devolver.
+    ///
+    /// Exato quando nenhum filtro avalia por linha. Com `Changed` ou `Added`, o
+    /// numero real so se sabe percorrendo.
+    #[must_use]
+    pub const fn upper_bound(&self) -> usize {
+        self.restantes
     }
 }
 
@@ -406,14 +681,27 @@ impl<'w, D: QueryData, F: QueryFilter> Iterator for QueryIter<'w, D, F> {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.row < self.len {
+                let row = self.row;
+                self.row += 1;
+                self.restantes -= 1;
+
+                // Filtros por archetype ja foram decididos na construcao; so os
+                // por linha custam alguma coisa aqui, e o `const` deixa o
+                // compilador apagar o desvio quando nao ha nenhum.
+                if F::POR_LINHA {
+                    let ff = self.fetch_filtro.expect("ha linhas, logo ha fetch de filtro");
+                    // SAFETY: `row < len`, com `len` vindo do archetype de onde
+                    // `ff` foi construido.
+                    if !unsafe { F::filter_fetch(ff, row, self.ticks) } {
+                        continue;
+                    }
+                }
+
                 let fetch = self.fetch.expect("ha linhas, logo ha fetch");
                 // SAFETY: `row < len`, e `len` e o numero de entidades do
                 // archetype de onde `fetch` foi construido. Cada linha e
                 // visitada uma unica vez, ja que `row` so cresce.
-                let item = unsafe { D::fetch(fetch, self.row) };
-                self.row += 1;
-                self.restantes -= 1;
-                return Some(item);
+                return Some(unsafe { D::fetch(fetch, row) });
             }
 
             let id = *self.correspondentes.get(self.proximo)?;
@@ -422,23 +710,27 @@ impl<'w, D: QueryData, F: QueryFilter> Iterator for QueryIter<'w, D, F> {
             let archetypes: &'w Archetypes = self.archetypes;
             let archetype = archetypes.get(id).expect("id veio desta colecao");
             // SAFETY: `id` so entrou em `correspondentes` depois de `matches`
-            // aceitar este archetype.
-            self.fetch = Some(unsafe { D::init_fetch(&self.state, archetype) });
+            // aceitar este archetype, tanto para os dados quanto para o filtro.
+            unsafe {
+                self.fetch = Some(D::init_fetch(&self.state, archetype, self.ticks));
+                self.fetch_filtro = Some(F::init_fetch(&self.filtro, archetype));
+            }
             self.row = 0;
             self.len = archetype.len();
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.restantes, Some(self.restantes))
+        // Com filtro por linha nao ha piso: todas as entidades podem ser
+        // recusadas. Sem ele, o limite superior tambem e o exato.
+        let piso = if F::POR_LINHA { 0 } else { self.restantes };
+        (piso, Some(self.restantes))
     }
 }
 
-impl<D: QueryData, F: QueryFilter> ExactSizeIterator for QueryIter<'_, D, F> {}
-
 #[cfg(test)]
 mod tests {
-    use crate::{Entity, With, Without, World};
+    use crate::{Added, Changed, Entity, QueryFilter, With, Without, World};
 
     #[derive(Debug, PartialEq)]
     struct Posicao(f32);
@@ -548,7 +840,7 @@ mod tests {
         }
         w.spawn((Velocidade(0.0),));
 
-        assert_eq!(w.query::<&Posicao>().len(), 7);
+        assert_eq!(w.query::<&Posicao>().upper_bound(), 7);
         assert_eq!(w.query::<&Posicao>().count(), 7);
     }
 
@@ -613,6 +905,162 @@ mod tests {
         assert_eq!(w.query::<(&Posicao, &Viva)>().count(), 2);
     }
 
+    // ---------------------------------------------------- deteccao de mudanca --
+
+    #[test]
+    fn changed_seleciona_so_quem_foi_exposto_para_escrita() {
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0),));
+        w.spawn((Posicao(2.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.get_mut::<Posicao>(a).unwrap().0 = 10.0;
+
+        let vistos: Vec<_> =
+            w.query_filtered_since::<&Posicao, Changed<Posicao>>(marco).map(|p| p.0).collect();
+
+        assert_eq!(vistos, vec![10.0]);
+    }
+
+    #[test]
+    fn escrever_pela_query_marca_a_linha() {
+        let mut w = World::new();
+        w.spawn((Posicao(1.0),));
+        w.spawn((Posicao(2.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        for p in w.query::<&mut Posicao>() {
+            if p.0 > 1.5 {
+                p.0 += 100.0;
+            }
+        }
+
+        // Toda linha visitada foi carimbada, tenha o valor mudado ou nao: o
+        // contrato e "exposto para escrita".
+        assert_eq!(w.query_filtered_since::<&Posicao, Changed<Posicao>>(marco).count(), 2);
+    }
+
+    #[test]
+    fn query_mutavel_com_filtro_de_mudanca_e_permitida() {
+        // O padrao mais comum de todos. O filtro le a coluna de ticks, nao os
+        // valores, entao nao conflita com a escrita da propria query.
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.get_mut::<Posicao>(a).unwrap().0 = 5.0;
+
+        w.increment_change_tick();
+        let mut n = 0;
+        for p in w.query_filtered_since::<&mut Posicao, Changed<Posicao>>(marco) {
+            p.0 *= 2.0;
+            n += 1;
+        }
+
+        assert_eq!(n, 1);
+        assert_eq!(w.get::<Posicao>(a).map(|p| p.0), Some(10.0));
+    }
+
+    #[test]
+    fn added_seleciona_so_quem_nasceu_depois() {
+        let mut w = World::new();
+        w.spawn((Posicao(1.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.spawn((Posicao(2.0),));
+
+        let vistos: Vec<_> =
+            w.query_filtered_since::<&Posicao, Added<Posicao>>(marco).map(|p| p.0).collect();
+
+        assert_eq!(vistos, vec![2.0]);
+    }
+
+    #[test]
+    fn alterar_nao_faz_o_componente_contar_como_adicionado() {
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.get_mut::<Posicao>(a).unwrap().0 = 9.0;
+
+        assert_eq!(w.query_filtered_since::<&Posicao, Added<Posicao>>(marco).count(), 0);
+        assert_eq!(w.query_filtered_since::<&Posicao, Changed<Posicao>>(marco).count(), 1);
+    }
+
+    #[test]
+    fn nada_mudou_desde_agora() {
+        let mut w = World::new();
+        w.spawn((Posicao(1.0),));
+        let agora = w.change_tick();
+
+        assert_eq!(w.query_filtered_since::<&Posicao, Changed<Posicao>>(agora).count(), 0);
+    }
+
+    #[test]
+    fn filtro_de_mudanca_combina_com_filtro_de_archetype() {
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0), Viva));
+        let b = w.spawn((Posicao(2.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.get_mut::<Posicao>(a).unwrap().0 = 10.0;
+        w.get_mut::<Posicao>(b).unwrap().0 = 20.0;
+
+        let vistos: Vec<_> = w
+            .query_filtered_since::<&Posicao, (With<Viva>, Changed<Posicao>)>(marco)
+            .map(|p| p.0)
+            .collect();
+
+        assert_eq!(vistos, vec![10.0], "os dois mudaram, mas so um esta vivo");
+    }
+
+    // `POR_LINHA` e constante, entao estas verificacoes acontecem na compilacao
+    // e nao na execucao — o que e o ponto: e justamente por ser `const` que o
+    // iterador consegue apagar o desvio por linha no caso comum. Um `assert!`
+    // dentro de `#[test]` sobre valor constante o clippy rejeita, com razao.
+    const _: () = assert!(!<() as QueryFilter>::POR_LINHA);
+    const _: () = assert!(!<With<Viva> as QueryFilter>::POR_LINHA);
+    const _: () = assert!(!<(With<Viva>, Without<Congelada>) as QueryFilter>::POR_LINHA);
+    const _: () = assert!(<Changed<Posicao> as QueryFilter>::POR_LINHA);
+    const _: () = assert!(<Added<Posicao> as QueryFilter>::POR_LINHA);
+    const _: () = assert!(<(With<Viva>, Changed<Posicao>) as QueryFilter>::POR_LINHA);
+
+    #[test]
+    fn size_hint_com_filtro_por_linha_nao_promete_piso() {
+        let mut w = World::new();
+        for i in 0..5 {
+            w.spawn((Posicao(i as f32),));
+        }
+        let agora = w.change_tick();
+
+        let iter = w.query_filtered_since::<&Posicao, Changed<Posicao>>(agora);
+        // Nenhuma mudou desde `agora`, mas o teto continua sendo o total.
+        assert_eq!(iter.size_hint(), (0, Some(5)));
+    }
+
+    #[test]
+    fn migrar_de_archetype_nao_marca_como_alterado() {
+        let mut w = World::new();
+        let a = w.spawn((Posicao(1.0),));
+        w.spawn((Posicao(2.0),));
+        let marco = w.change_tick();
+
+        w.increment_change_tick();
+        w.insert(a, (Viva,));
+
+        assert_eq!(
+            w.query_filtered_since::<&Posicao, Changed<Posicao>>(marco).count(),
+            0,
+            "a posicao foi carregada para o novo archetype, nao tocada"
+        );
+    }
+
     #[test]
     fn entidades_deslocadas_por_despawn_continuam_visiveis() {
         let mut w = World::new();
@@ -650,12 +1098,21 @@ impl<D: QueryData, F: QueryFilter> QueryState<D, F> {
         let data = D::init_state(components);
         let filtro = F::init_state(components);
 
+        // A checagem de autoconflito olha so o que a query le e escreve de
+        // verdade. O acesso do filtro entra depois, de proposito: `Changed<T>`
+        // le a coluna de ticks de `T`, nao os valores, entao
+        // `Query<&mut T, Changed<T>>` — o padrao mais comum de todos — nao e um
+        // conflito. Somar o filtro antes o rejeitaria por engano.
+        //
+        // Para o scheduler, porem, essa leitura conta: outro sistema escrevendo
+        // `T` escreve os ticks. Por isso ela entra no acesso reportado.
         let mut acesso = Access::new();
         D::access(&data, &mut acesso);
         if let Some(Conflict::Component(id)) = acesso.self_conflict() {
             let nome = components.info(id).map_or("?", |i| i.name());
             panic!("query pede o componente {nome} de forma conflitante consigo mesma");
         }
+        F::access(&filtro, &mut acesso);
 
         Self { data, filtro, acesso }
     }
@@ -674,13 +1131,19 @@ impl<D: QueryData, F: QueryFilter> QueryState<D, F> {
 pub struct Query<'w, 's, D: QueryData, F: QueryFilter = ()> {
     archetypes: &'w Archetypes,
     estado: &'s QueryState<D, F>,
+    ticks: SystemTicks,
 }
 
 impl<'w, 's, D: QueryData, F: QueryFilter> Query<'w, 's, D, F> {
-    /// Constroi a query a partir dos archetypes e do estado.
+    /// Constroi a query a partir dos archetypes, do estado e dos ticks do
+    /// sistema que a recebe.
     #[must_use]
-    pub const fn new(archetypes: &'w Archetypes, estado: &'s QueryState<D, F>) -> Self {
-        Self { archetypes, estado }
+    pub const fn new(
+        archetypes: &'w Archetypes,
+        estado: &'s QueryState<D, F>,
+        ticks: SystemTicks,
+    ) -> Self {
+        Self { archetypes, estado, ticks }
     }
 
     /// Percorre as entidades que casam.
@@ -689,13 +1152,16 @@ impl<'w, 's, D: QueryData, F: QueryFilter> Query<'w, 's, D, F> {
     /// dois iteradores vivos ao mesmo tempo, e num query com `&mut T` isso seria
     /// aliasing sobre a mesma linha.
     pub fn iter(&mut self) -> QueryIter<'_, D, F> {
-        QueryIter::from_state(self.archetypes, self.estado)
+        QueryIter::from_state(self.archetypes, self.estado, self.ticks)
     }
 
     /// Quantas entidades casam neste instante.
+    ///
+    /// Com filtro por linha, percorre para contar; sem, e imediato.
     #[must_use]
     pub fn count(&self) -> usize {
-        QueryIter::<D, F>::from_state(self.archetypes, self.estado).len()
+        let iter = QueryIter::<D, F>::from_state(self.archetypes, self.estado, self.ticks);
+        if F::POR_LINHA { iter.count() } else { iter.upper_bound() }
     }
 
     /// Indica se nenhuma entidade casa.

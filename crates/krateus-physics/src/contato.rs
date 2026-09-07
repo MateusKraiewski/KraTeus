@@ -773,10 +773,10 @@ pub fn caixa_capsula(
     }
 
     if distancia_quadrada > EPS_DIRECAO_QUADRADA {
-        return Some(contato_de_segmento_fora(p0, p1, h, s, distancia_quadrada, raio_b, a, m));
+        return Some(contato_de_segmento_fora(p0, p1, h, s, distancia_quadrada, raio_b, a));
     }
 
-    Some(contato_de_segmento_dentro(p0, p1, h, raio_b, a, m))
+    Some(contato_de_segmento_dentro(p0, p1, h, raio_b, a))
 }
 
 /// Segmento fora da caixa: o ponto mais proximo da a normal e a profundidade.
@@ -788,8 +788,8 @@ fn contato_de_segmento_fora(
     distancia_quadrada: f32,
     raio: f32,
     pose: Pose,
-    m: Mat3,
 ) -> Contato {
+    let m = Mat3::from_quat(pose.rotacao);
     let direcao = p1 - p0;
     let no_segmento = p0 + direcao * s;
     let na_caixa = no_segmento.clamp(-h, h);
@@ -823,14 +823,8 @@ fn contato_de_segmento_fora(
 }
 
 /// Segmento atravessando a caixa: eixo separador de menor penetracao.
-fn contato_de_segmento_dentro(
-    p0: Vec3,
-    p1: Vec3,
-    h: Vec3,
-    raio: f32,
-    pose: Pose,
-    m: Mat3,
-) -> Contato {
+fn contato_de_segmento_dentro(p0: Vec3, p1: Vec3, h: Vec3, raio: f32, pose: Pose) -> Contato {
+    let m = Mat3::from_quat(pose.rotacao);
     let direcao = p1 - p0;
     let centro = (p0 + p1) * 0.5;
     let meio = direcao * 0.5;
@@ -1913,12 +1907,8 @@ mod tests {
     #[test]
     fn o_recorte_recusa_faixa_vazia() {
         // Segmento paralelo a X, mas fora da fatia em Z: nao ha apoio de face.
-        let vazio = recorte_nas_outras_fatias(
-            Vec3::new(-3.0, 0.0, 5.0),
-            Vec3::X * 6.0,
-            Vec3::ONE,
-            1,
-        );
+        let vazio =
+            recorte_nas_outras_fatias(Vec3::new(-3.0, 0.0, 5.0), Vec3::X * 6.0, Vec3::ONE, 1);
 
         assert_eq!(vazio, None);
     }

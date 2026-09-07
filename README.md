@@ -21,11 +21,15 @@ a camada gráfica está começando.
 | **1** | Workspace, core, logging, config, CI | ✅ concluída |
 | **2** | ECS, jobs, scheduler, loop de simulação | ✅ concluída |
 | **3** | RHI e primeiro backend gráfico | 🚧 vocabulário e backend nulo prontos; **backend real não iniciado** |
-| 4–8 | Renderer, física, mundo, editor, profiler, networking | ⬜ não iniciadas |
+| **5** | Física | 🚧 integrador e trajetória prontos; colisão não iniciada |
+| 4, 6–8 | Renderer, mundo, editor, profiler, networking | ⬜ não iniciadas |
 
-**316 testes** passando na matriz Windows + Linux, incluindo um teste de
-determinismo cross-platform que compara o hash de estado após 300 passos de
-simulação.
+A Fase 5 foi começada fora de ordem por ser a única que avança sem placa de
+vídeo. O que existe dela está listado abaixo; o que não existe está marcado como
+não existindo.
+
+A suíte roda na matriz Windows + Linux e inclui um teste de determinismo
+cross-platform que compara o hash de estado após 300 passos de simulação.
 
 ### Por que o backend gráfico ainda não começou
 
@@ -33,6 +37,9 @@ O ambiente de desenvolvimento tem o **Smart App Control** do Windows em modo
 enforce, que bloqueia a execução de binários recém-compilados por não terem
 reputação. Isso impede o critério de aceite da Fase 3 — desenhar um triângulo
 numa janela — que exige rodar um executável com acesso à GPU local.
+
+Desde 7 de setembro de 2026 o bloqueio alcança o próprio `rustc`, e não há mais
+compilação local de nenhuma espécie. O CI é hoje o único compilador do projeto.
 
 As vias de autorização administrada foram testadas e descartadas; o registro
 completo está em [`docs/RISCOS.md`](docs/RISCOS.md). O trabalho que não depende
@@ -142,6 +149,25 @@ backend real precisará passar.
 ### `krateus-render`
 Render World completo, testado do mundo lógico ao comando de GPU contra o
 `NullRhi`.
+
+### `krateus-physics`
+Início da Fase 5, feito enquanto a camada gráfica aguarda ambiente:
+
+- **Integrador semi-implícito** com gravidade, forças e impulsos. A massa é
+  guardada invertida, o que faz de "corpo estático" o valor `0.0` em vez de um
+  caso especial. Dois testes lado a lado mostram por que o semi-implícito foi
+  escolhido: ele mantém a energia de um oscilador dentro de 5% ao longo de mil
+  passos, e o Euler explícito, no mesmo sistema, a infla.
+- **Ferramenta de trajetória** do §6: dados altura do ápice, distância e
+  desnível, devolve velocidades, tempos de subida, descida e voo. A solução usa
+  apenas raiz quadrada e aritmética — sem `tan` nem `atan` —, porque funções
+  transcendentais da libm são onde plataformas divergem.
+- **Níveis de fidelidade** — analítica, integrada, integrada com arrasto — para
+  que uma previsão de mira barata e uma granada com arrasto usem a mesma API com
+  custos diferentes.
+
+Ainda **não existem**: formas de colisão, broadphase, narrowphase, resolução de
+contato, raycast, character controller e gizmos de debug.
 
 ---
 

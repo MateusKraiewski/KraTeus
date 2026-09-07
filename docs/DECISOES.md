@@ -355,3 +355,57 @@ uma bateria de testes que ele precisa passar.
 
 **Custo de reversão.** Baixo por construção: é essa a razão de a decisão
 existir.
+
+---
+
+## D13 — Integrador semi-implícito, e uma `Posicao` própria da física
+
+**Decisão.** O integrador de `krateus-physics` é **semi-implícito** (velocidade
+primeiro, posição com a velocidade nova), e a física define seus próprios
+componentes `Posicao` e `Velocidade` em vez de reusar o `Transform` de
+`krateus-render`.
+
+### Por que semi-implícito
+
+A diferença para o Euler explícito é a ordem de duas linhas, e muda o
+comportamento qualitativo. O semi-implícito é simplético: a energia de um sistema
+oscilante fica **limitada**, oscilando em torno do valor correto. O explícito
+injeta energia a cada passo.
+
+Isso não é sutileza acadêmica. Quase tudo em física de jogo oscila — mola,
+suspensão, contato com penetração —, e com o explícito uma pilha de caixas ganha
+energia sozinha e explode. Há dois testes lado a lado em `integrador.rs`: um
+verifica que o semi-implícito mantém a energia dentro de 5% ao longo de mil
+passos, o outro verifica que o explícito, no mesmo sistema, a infla. O segundo
+existe para que a escolha não pareça arbitrária a quem ler depois.
+
+O custo é conhecido e aceito: o semi-implícito é de primeira ordem, então erra a
+*fase* — o período sai levemente errado. Errar a fase é aceitável; ganhar energia
+não é.
+
+### Por que a massa é guardada invertida
+
+`MassaInversa`, não `Massa`. A divisão por massa aparece em todo passo de
+integração e em toda resolução de contato, e guardar `1/m` a transforma em
+multiplicação. Mais importante: massa infinita — um corpo estático, o chão — vira
+`0.0`, que é um número comum, em vez de um caso especial espalhado pelo código.
+
+### Por que `Posicao` própria, e não o `Transform` do renderer
+
+Duas razões, e a segunda é a que importa.
+
+A primeira é a direção da dependência: `krateus-physics` puxar `krateus-render`
+inverteria o grafo — a física é produtora de estado, o renderer é consumidor.
+
+A segunda é que **são conceitos diferentes**. O renderer precisa de translação,
+rotação *e escala*; a física não simula escala, e a orientação de um corpo rígido
+está ligada ao tensor de inércia, não à apresentação. Unificar os dois hoje
+economizaria uma struct e cobraria depois, quando o corpo rígido chegar.
+
+A ponte entre eles é um sistema de sincronização, e ele ainda **não existe** — de
+propósito. Não há consumidor: sem backend gráfico, não há o que sincronizar.
+Escrevê-lo agora seria adivinhar a forma (§19).
+
+**Custo de reversão.** Baixo. O integrador é uma função de seis parâmetros, e
+trocar `Posicao` por um transform compartilhado é uma migração mecânica enquanto
+não houver corpo rígido nem contato.

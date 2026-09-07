@@ -409,3 +409,56 @@ Escrevê-lo agora seria adivinhar a forma (§19).
 **Custo de reversão.** Baixo. O integrador é uma função de seis parâmetros, e
 trocar `Posicao` por um transform compartilhado é uma migração mecânica enquanto
 não houver corpo rígido nem contato.
+
+---
+
+## D14 — Como as formas de colisão são representadas
+
+**Decisão.** Três escolhas tomadas ao implementar `krateus-physics::forma`, e
+aprovadas em 2026-09-07. O escopo é exatamente este — nada aqui se estende a
+broadphase, contato ou consultas, que ainda não existem.
+
+### 1. `Forma` é um `enum`, não um trait
+
+O conjunto de formas é fechado e pequeno, e é percorrido no laço mais interno da
+colisão. `dyn Forma` colocaria despacho indireto ali dentro e, mais grave,
+tiraria do código o controle da ordem de despacho, que é o que a
+[D09](#d09--determinismo-f32-com-ordem-determinística-e-timestep-fixo) exige
+poder garantir.
+
+Isso **não revoga** a [D04](#d04--física-própria-no-núcleo-com-costura-para-backend-externo).
+A trait que a D04 pede continua valendo, e no lugar onde ela paga: a costura de
+backend — passo de simulação e consultas —, por onde o Rapier entraria. Uma
+forma individual não é um ponto de extensão; o mundo de física é.
+
+### 2. AABB e OBB são uma `Caixa` só, distinguidas pela rotação
+
+O roadmap lista "esfera, AABB, OBB, cápsula, plano". AABB e OBB não são duas
+formas: são a mesma caixa, uma com rotação identidade e outra sem. Modelá-las
+separadamente duplicaria todo teste de colisão que envolvesse caixa, para
+distinguir um caso que a própria rotação já distingue.
+
+Um tipo separado para a caixa alinhada só se justifica se aparecer um consumidor
+que ganhe com isso — um caminho rápido medido, não presumido.
+
+### 3. `Plano` é semiespaço, e `aabb()` devolve `Option<Aabb>`
+
+O plano é o chão, e não uma folha infinitamente fina: um corpo que atravessa a
+superfície está *dentro* do sólido, e o contato tem para onde empurrar. Uma folha
+sem espessura deixaria o solver sem direção de saída.
+
+E o semiespaço não tem envelope finito. `None` é a resposta honesta: uma caixa
+infinita se sobreporia a todos os pares e transformaria a broadphase em força
+bruta. O `Option` obriga quem chama a tratar o semiespaço à parte — que é o que
+todo motor de física faz com o chão de qualquer maneira.
+
+### Custo de reversão
+
+**Baixo, hoje.** Nada depende ainda dessas escolhas: não há broadphase, contato
+nem consulta. As três podem ser revistas se um consumidor real ou um backend
+externo demonstrar necessidade — um caminho rápido medido para caixas alinhadas,
+uma forma que precise ser definida fora da crate, ou um backend cuja API exija
+envelope para todas as formas.
+
+O custo cresce com o que se apoiar nelas. A revisão barata é agora; depois da
+broadphase e do solver, não é mais.

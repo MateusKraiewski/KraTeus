@@ -41,7 +41,7 @@
 //! | Caixa × Plano | ✅ semiespaco |
 //! | Plano × Plano | ✅ sem contato finito |
 //! | Esfera × Caixa | ✅ ponto mais proximo na OBB |
-//! | Caixa × Capsula | ⬜ grupo C |
+//! | Caixa × Capsula | ✅ distancia fechada, e SAT quando atravessa |
 //! | Caixa × Caixa | ⬜ grupo D |
 //!
 //! Nao ha despacho geral por [`Forma`](crate::Forma) ainda, **de proposito**: um
@@ -638,6 +638,297 @@ pub fn esfera_caixa(raio_a: f32, a: Pose, meias_extensoes_b: Vec3, b: Pose) -> O
     let ponto = a.posicao + normal * raio_a;
 
     Some(Contato::novo(normal, raio_a + saida, &[ponto]))
+}
+
+/// Quao perto do eixo a normal precisa estar para o contato ser de face.
+///
+/// Uma normal com componente dominante acima de `0,999` esta a menos de 2,6° de
+/// um eixo da caixa. Acima disso o contato e de face, e a capsula deitada apoia
+/// num trecho; abaixo, e de aresta ou de vertice, e um trecho seria geometria
+/// inventada.
+const EPS_EIXO_ALINHADO: f32 = 1e-3;
+
+/// Parametro do ponto do segmento mais proximo da caixa, e a distancia.
+///
+/// A caixa esta alinhada e centrada na origem — quem chama transforma para o
+/// espaco local dela antes.
+///
+/// # Como e exato sem iterar
+///
+/// A distancia ao quadrado ate uma caixa e `Σ max(0, |uᵢ| − hᵢ)²`. Ao longo do
+/// segmento, cada termo e zero enquanto a coordenada esta dentro da fatia e um
+/// quadrado de funcao linear quando esta fora. Os pontos onde isso muda sao
+/// exatamente onde o segmento cruza um plano de face — no maximo seis. Entre
+/// dois cruzamentos consecutivos o conjunto de termos ativos nao muda, entao a
+/// funcao e uma **quadratica simples**, e o minimo dela sai por formula fechada.
+///
+/// Nao ha busca, nao ha iteracao, e nao ha tolerancia de convergencia: apenas
+/// sete trechos no pior caso, cada um resolvido exatamente. Empate entre trechos
+/// fica com o primeiro, que e o de menor `s`.
+fn segmento_ate_caixa(p0: Vec3, p1: Vec3, meias: Vec3) -> (f32, f32) {
+    let direcao = p1 - p0;
+    let (p, d, h) = (p0.to_array(), direcao.to_array(), meias.to_array());
+
+    // Os extremos sempre entram; os cruzamentos, quando caem dentro do segmento.
+    let mut quebras = [0.0_f32; 8];
+    let mut usadas = 2;
+    quebras[1] = 1.0;
+
+    for i in 0..3 {
+        if d[i] * d[i] <= EPS_COMPRIMENTO_QUADRADO {
+            continue;
+        }
+        for face in [h[i], -h[i]] {
+            let s = (face - p[i]) / d[i];
+            if s > 0.0 && s < 1.0 {
+                quebras[usadas] = s;
+                usadas += 1;
+            }
+        }
+    }
+
+    let quebras = &mut quebras[..usadas];
+    quebras.sort_by(f32::total_cmp);
+
+    let mut melhor = f32::INFINITY;
+    let mut melhor_s = 0.0;
+
+    for trecho in quebras.windows(2) {
+        let (lo, hi) = (trecho[0], trecho[1]);
+        if hi <= lo {
+            continue;
+        }
+
+        // O conjunto de termos ativos e constante no trecho; o meio revela qual.
+        let meio = (lo + hi) * 0.5;
+        let (mut a, mut b, mut c) = (0.0_f32, 0.0_f32, 0.0_f32);
+
+        for i in 0..3 {
+            let u = p[i] + meio * d[i];
+            let (constante, inclinacao) = if u > h[i] {
+                (p[i] - h[i], d[i])
+            } else if u < -h[i] {
+                (-h[i] - p[i], -d[i])
+            } else {
+                (0.0, 0.0)
+            };
+            a += inclinacao * inclinacao;
+            b += 2.0 * constante * inclinacao;
+            c += constante * constante;
+        }
+
+        // `a` e soma de quadrados, entao a parabola abre para cima e o vertice e
+        // o minimo. Com `a` zero a funcao e constante no trecho, e qualquer
+        // ponto serve.
+        let s = if a > 0.0 { (-b / (2.0 * a)).clamp(lo, hi) } else { lo };
+        let valor = (a * s + b) * s + c;
+
+        if valor < melhor {
+            melhor = valor;
+            melhor_s = s;
+        }
+    }
+
+    (melhor_s, melhor.max(0.0))
+}
+
+/// Contato entre uma caixa (A) e uma capsula (B).
+///
+/// Dois regimes, e os dois sao exatos.
+///
+/// **Segmento fora da caixa.** A capsula e o segmento engordado por um raio,
+/// entao a distancia entre segmento e caixa resolve tudo:
+/// [`segmento_ate_caixa`] a calcula em forma fechada.
+///
+/// **Segmento atravessando a caixa.** Ali a distancia e zero e nao ha direcao a
+/// extrair dela. A saida e o eixo separador de menor penetracao entre o segmento
+/// e a caixa — os dois sao convexos, e o segmento e um poliedro degenerado, o
+/// que da seis eixos candidatos: as tres faces da caixa e os tres produtos
+/// vetoriais entre os eixos dela e a direcao do segmento.
+///
+/// O raio entra somando. Isso **nao** e uma aproximacao: crescer um convexo por
+/// uma bola de raio `r` soma `r` a funcao suporte em toda direcao, entao o eixo
+/// de menor penetracao e o mesmo e a profundidade cresce exatamente `r`. E por
+/// isso que a capsula se resolve pelo segmento, e por isso que GJK e EPA nao
+/// sao necessarios aqui.
+#[must_use]
+pub fn caixa_capsula(
+    meias_extensoes_a: Vec3,
+    a: Pose,
+    raio_b: f32,
+    meia_altura_b: f32,
+    b: Pose,
+) -> Option<Contato> {
+    let m = Mat3::from_quat(a.rotacao);
+    let para_local = m.transpose();
+    let nucleo = Nucleo::capsula(raio_b, meia_altura_b, b);
+    let p0 = para_local * (nucleo.inicio - a.posicao);
+    let p1 = para_local * (nucleo.fim - a.posicao);
+    let h = meias_extensoes_a;
+
+    let (s, distancia_quadrada) = segmento_ate_caixa(p0, p1, h);
+
+    if distancia_quadrada > raio_b * raio_b {
+        return None;
+    }
+
+    if distancia_quadrada > EPS_DIRECAO_QUADRADA {
+        return Some(contato_de_segmento_fora(p0, p1, h, s, distancia_quadrada, raio_b, a, m));
+    }
+
+    Some(contato_de_segmento_dentro(p0, p1, h, raio_b, a, m))
+}
+
+/// Segmento fora da caixa: o ponto mais proximo da a normal e a profundidade.
+fn contato_de_segmento_fora(
+    p0: Vec3,
+    p1: Vec3,
+    h: Vec3,
+    s: f32,
+    distancia_quadrada: f32,
+    raio: f32,
+    pose: Pose,
+    m: Mat3,
+) -> Contato {
+    let direcao = p1 - p0;
+    let no_segmento = p0 + direcao * s;
+    let na_caixa = no_segmento.clamp(-h, h);
+
+    let distancia = distancia_quadrada.sqrt();
+    let normal_local = (no_segmento - na_caixa) / distancia;
+    let profundidade = raio - distancia;
+
+    // Contato de face: a normal e um eixo da caixa, e uma capsula deitada apoia
+    // num trecho em vez de num ponto. O trecho sai recortando o segmento contra
+    // as duas fatias perpendiculares a normal — as outras nao restringem, porque
+    // a normal ja aponta para fora daquela face.
+    let eixo = eixo_dominante(normal_local);
+    let mut pontos = [Vec3::ZERO; MAX_PONTOS];
+    let mut quantidade = 1;
+    pontos[0] = pose.posicao + m * na_caixa;
+
+    if let Some(indice) = eixo {
+        if let Some((lo, hi)) = recorte_nas_outras_fatias(p0, direcao, h, indice) {
+            let extremo_a = (p0 + direcao * lo).clamp(-h, h);
+            let extremo_b = (p0 + direcao * hi).clamp(-h, h);
+            if (extremo_b - extremo_a).length() > EPS_SEPARACAO_PONTOS {
+                pontos[0] = pose.posicao + m * extremo_a;
+                pontos[1] = pose.posicao + m * extremo_b;
+                quantidade = 2;
+            }
+        }
+    }
+
+    Contato::novo(m * normal_local, profundidade, &pontos[..quantidade])
+}
+
+/// Segmento atravessando a caixa: eixo separador de menor penetracao.
+fn contato_de_segmento_dentro(
+    p0: Vec3,
+    p1: Vec3,
+    h: Vec3,
+    raio: f32,
+    pose: Pose,
+    m: Mat3,
+) -> Contato {
+    let direcao = p1 - p0;
+    let centro = (p0 + p1) * 0.5;
+    let meio = direcao * 0.5;
+
+    let candidatos = [
+        Vec3::X,
+        Vec3::Y,
+        Vec3::Z,
+        Vec3::X.cross(direcao),
+        Vec3::Y.cross(direcao),
+        Vec3::Z.cross(direcao),
+    ];
+
+    let mut melhor_separacao = f32::NEG_INFINITY;
+    let mut melhor_eixo = Vec3::X;
+
+    for candidato in candidatos {
+        let comprimento_quadrado = candidato.length_squared();
+        // Produto vetorial nulo: o segmento e paralelo aquele eixo da caixa, e o
+        // eixo candidato nao existe. Descartar e correto, nao e um atalho.
+        if comprimento_quadrado <= EPS_COMPRIMENTO_QUADRADO {
+            continue;
+        }
+
+        let eixo = candidato / comprimento_quadrado.sqrt();
+        let alcance = h.dot(eixo.abs()) + meio.dot(eixo).abs();
+        let separacao = centro.dot(eixo).abs() - alcance;
+
+        // Empate fica com o primeiro: a ordem dos candidatos e fixa.
+        if separacao > melhor_separacao {
+            melhor_separacao = separacao;
+            melhor_eixo = if centro.dot(eixo) < 0.0 { -eixo } else { eixo };
+        }
+    }
+
+    // A capsula e o segmento crescido pela bola de raio `r`, e crescer um convexo
+    // por uma bola soma `r` a profundidade sem mudar a direcao.
+    let profundidade = (raio - melhor_separacao).max(0.0);
+
+    // Ponto de A mais fundo em B: o vertice de suporte na direcao da normal.
+    // `signum` devolve `+1` para zero, o que fixa o desempate quando a normal e
+    // perpendicular a um eixo.
+    let suporte = Vec3::new(
+        melhor_eixo.x.signum() * h.x,
+        melhor_eixo.y.signum() * h.y,
+        melhor_eixo.z.signum() * h.z,
+    );
+
+    Contato::novo(m * melhor_eixo, profundidade, &[pose.posicao + m * suporte])
+}
+
+/// Indice do eixo com que a normal esta alinhada, se houver.
+fn eixo_dominante(normal: Vec3) -> Option<usize> {
+    let a = normal.abs();
+    let (indice, maior) = if a.x >= a.y && a.x >= a.z {
+        (0, a.x)
+    } else if a.y >= a.z {
+        (1, a.y)
+    } else {
+        (2, a.z)
+    };
+
+    (1.0 - maior < EPS_EIXO_ALINHADO).then_some(indice)
+}
+
+/// Faixa de `s` em que o segmento fica dentro das fatias perpendiculares a
+/// `excluido`.
+///
+/// `None` quando a faixa e vazia — o segmento passa ao largo da face.
+fn recorte_nas_outras_fatias(
+    p0: Vec3,
+    direcao: Vec3,
+    h: Vec3,
+    excluido: usize,
+) -> Option<(f32, f32)> {
+    let (p, d, meias) = (p0.to_array(), direcao.to_array(), h.to_array());
+    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+
+    for i in 0..3 {
+        if i == excluido {
+            continue;
+        }
+        if d[i] * d[i] <= EPS_COMPRIMENTO_QUADRADO {
+            // Sem variacao nesse eixo: ou o segmento inteiro esta na fatia, ou
+            // nenhum ponto dele esta.
+            if p[i].abs() > meias[i] {
+                return None;
+            }
+            continue;
+        }
+        let t0 = (-meias[i] - p[i]) / d[i];
+        let t1 = (meias[i] - p[i]) / d[i];
+        let (menor, maior) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        lo = lo.max(menor);
+        hi = hi.min(maior);
+    }
+
+    (lo < hi).then_some((lo, hi))
 }
 
 /// Dois semiespacos nunca produzem contato finito.
@@ -1370,6 +1661,266 @@ mod tests {
         };
 
         assert_eq!(caso(), caso());
+    }
+
+    // -------------------------------------------------------- caixa x capsula --
+
+    /// Distancia ao quadrado de um ponto a uma caixa alinhada na origem.
+    fn distancia_quadrada_ate_caixa(ponto: Vec3, meias: Vec3) -> f32 {
+        (ponto.abs() - meias).max(Vec3::ZERO).length_squared()
+    }
+
+    /// Distancia entre segmento e caixa por amostragem densa.
+    ///
+    /// Oraculo independente: nao compartilha uma linha com a solucao fechada.
+    /// Amostrar so pode **superestimar** o minimo, entao a analitica tem de ser
+    /// menor ou igual, e a diferenca limitada pela resolucao da amostra.
+    fn distancia_amostrada(p0: Vec3, p1: Vec3, meias: Vec3) -> f32 {
+        let mut menor = f32::INFINITY;
+        for i in 0..=4000u16 {
+            let s = f32::from(i) / 4000.0;
+            let ponto = p0 + (p1 - p0) * s;
+            let fora = (ponto.abs() - meias).max(Vec3::ZERO);
+            menor = menor.min(fora.length());
+        }
+        menor
+    }
+
+    #[test]
+    fn a_distancia_fechada_concorda_com_a_amostrada() {
+        let meias = Vec3::new(1.0, 2.0, 0.5);
+        for (p0, p1) in [
+            (Vec3::new(3.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 0.0)),
+            (Vec3::new(-4.0, 3.0, 2.0), Vec3::new(4.0, 3.0, 2.0)),
+            (Vec3::new(0.0, 5.0, 0.0), Vec3::new(0.0, 2.5, 0.0)),
+            (Vec3::new(-3.0, -3.0, -3.0), Vec3::new(3.0, 3.0, 3.0)),
+            (Vec3::new(2.0, 3.0, 1.0), Vec3::new(-2.0, 3.0, -1.0)),
+            (Vec3::new(1.5, 0.0, 0.0), Vec3::new(1.5, 0.0, 0.0)),
+        ] {
+            let (_, quadrada) = segmento_ate_caixa(p0, p1, meias);
+            let fechada = quadrada.sqrt();
+            let amostrada = distancia_amostrada(p0, p1, meias);
+
+            assert!(fechada <= amostrada + 1e-5, "fechada {fechada} > amostrada {amostrada}");
+            assert!(amostrada - fechada < 5e-3, "fechada {fechada} longe de {amostrada}");
+        }
+    }
+
+    #[test]
+    fn o_parametro_devolvido_realiza_a_distancia() {
+        let meias = Vec3::new(1.0, 2.0, 0.5);
+        let (p0, p1) = (Vec3::new(-4.0, 3.0, 2.0), Vec3::new(4.0, 3.0, 2.0));
+        let (s, quadrada) = segmento_ate_caixa(p0, p1, meias);
+
+        let ponto = p0 + (p1 - p0) * s;
+        let no_ponto = distancia_quadrada_ate_caixa(ponto, meias);
+
+        assert!((0.0..=1.0).contains(&s), "s fora do segmento: {s}");
+        assert!((no_ponto - quadrada).abs() < 1e-5, "{no_ponto} != {quadrada}");
+    }
+
+    #[test]
+    fn capsula_longe_da_caixa_nao_toca() {
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 5.0));
+
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn capsula_em_pe_tangente_a_face() {
+        // Segmento vertical a 1,5 do centro; o raio 0,5 encosta na face x = 1.
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 1.5))
+            .expect("encostar conta");
+        invariantes(&c);
+
+        assert_eq!(c.profundidade(), 0.0);
+        assert!(perto(c.normal(), Vec3::X), "de A (caixa) para B (capsula)");
+    }
+
+    #[test]
+    fn capsula_em_pe_penetrando_a_face() {
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 1.3))
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert!(perto(c.normal(), Vec3::X));
+        // O segmento fica 0,3 fora da face, e o raio e 0,5.
+        assert!((c.profundidade() - 0.2).abs() < 1e-5, "{}", c.profundidade());
+    }
+
+    #[test]
+    fn capsula_deitada_sobre_a_face_apoia_em_dois_pontos() {
+        // O caso que a matriz promete: o eixo paralelo a face da um trecho, e
+        // nao um ponto. Um ponto so deixaria a capsula girar sobre a caixa.
+        let deitada = Pose::nova(Vec3::Y * 1.4, QUARTO_Z);
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 2.0, deitada)
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.pontos().len(), 2, "capsula deitada apoia num trecho");
+        assert!(perto(c.normal(), Vec3::Y));
+        assert!((c.profundidade() - 0.1).abs() < 1e-4, "{}", c.profundidade());
+        for p in c.pontos() {
+            assert!((p.y - 1.0).abs() < 1e-4, "os pontos ficam na face de cima: {p}");
+            assert!(p.x.abs() <= 1.0 + 1e-4, "e dentro dela: {p}");
+        }
+    }
+
+    #[test]
+    fn capsula_deitada_curta_apoia_num_trecho_menor() {
+        // Meia altura menor que a caixa: o trecho e o proprio segmento.
+        let deitada = Pose::nova(Vec3::Y * 1.4, QUARTO_Z);
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada)
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.pontos().len(), 2);
+        let largura = (c.pontos()[1] - c.pontos()[0]).length();
+        assert!((largura - 1.0).abs() < 1e-4, "o trecho e o segmento inteiro: {largura}");
+    }
+
+    #[test]
+    fn capsula_alem_da_face_nao_apoia_em_dois_pontos() {
+        // Deitada, mas passando da face: a normal deixa de ser um eixo da caixa
+        // e o apoio vira um ponto na quina.
+        let deitada = Pose::nova(Vec3::new(1.6, 1.4, 0.0), QUARTO_Z);
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada)
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.pontos().len(), 1, "so a quina toca");
+        assert!(perto(c.pontos()[0], Vec3::new(1.0, 1.0, 0.0)), "{}", c.pontos()[0]);
+    }
+
+    #[test]
+    fn capsula_no_canto_da_caixa() {
+        let canto = Pose::em(Vec3::new(1.3, 1.3, 1.3));
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.2, canto)
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.pontos().len(), 1, "vertice nao apoia num trecho");
+        assert!(perto(c.pontos()[0], Vec3::ONE), "o vertice da caixa: {}", c.pontos()[0]);
+    }
+
+    #[test]
+    fn capsula_atravessando_a_caixa_usa_o_eixo_separador() {
+        // O segmento passa pelo meio da caixa: nao ha distancia de onde tirar
+        // direcao, e a saida e pelo eixo de menor penetracao.
+        let atravessa = Pose::nova(Vec3::ZERO, QUARTO_Z);
+        let c = caixa_capsula(Vec3::new(1.0, 2.0, 3.0), Pose::em(Vec3::ZERO), 0.25, 5.0, atravessa)
+            .expect("atravessar e contato");
+        invariantes(&c);
+
+        // O segmento corre em X; a menor saida e pelo menor semi-eixo restante.
+        assert!(c.profundidade() > 0.0);
+        assert_eq!(c.pontos().len(), 1);
+    }
+
+    #[test]
+    fn capsula_no_centro_da_caixa() {
+        let c = caixa_capsula(
+            Vec3::new(3.0, 2.0, 0.5),
+            Pose::em(Vec3::ZERO),
+            0.1,
+            0.2,
+            Pose::em(Vec3::ZERO),
+        )
+        .expect("ha contato");
+        invariantes(&c);
+
+        // O eixo de menor alcance e Z, e a capsula em pe soma meia altura em Y.
+        assert!(perto(c.normal().abs(), Vec3::Z), "normal {}", c.normal());
+        assert!((c.profundidade() - 0.6).abs() < 1e-5, "{}", c.profundidade());
+    }
+
+    #[test]
+    fn a_profundidade_de_capsula_bate_com_a_distancia_amostrada() {
+        let meias = Vec3::new(1.0, 2.0, 0.5);
+        let raio = 0.75;
+        for centro in [
+            Vec3::new(1.5, 0.0, 0.0),
+            Vec3::new(1.4, 2.3, 0.4),
+            Vec3::new(0.0, 2.6, 0.0),
+            Vec3::new(-1.6, -2.3, -0.8),
+        ] {
+            let pose = Pose::em(centro);
+            let c = caixa_capsula(meias, Pose::em(Vec3::ZERO), raio, 0.4, pose)
+                .expect("ha contato");
+
+            let nucleo_inicio = centro - Vec3::Y * 0.4;
+            let nucleo_fim = centro + Vec3::Y * 0.4;
+            let esperada = raio - distancia_amostrada(nucleo_inicio, nucleo_fim, meias);
+
+            assert!(
+                (c.profundidade() - esperada).abs() < 5e-3,
+                "centro {centro}: {} != {esperada}",
+                c.profundidade()
+            );
+        }
+    }
+
+    #[test]
+    fn a_caixa_girada_move_o_contato_com_a_capsula() {
+        // Meia volta em Y e exata: uma caixa alongada em X continua alongada em X.
+        let meias = Vec3::new(2.0, 0.5, 0.5);
+        let capsula = Pose::em(Vec3::X * 2.4);
+
+        let reta = caixa_capsula(meias, Pose::em(Vec3::ZERO), 0.5, 0.3, capsula)
+            .expect("ha contato");
+        let girada = caixa_capsula(meias, Pose::nova(Vec3::ZERO, MEIA_VOLTA_Y), 0.5, 0.3, capsula)
+            .expect("ha contato");
+
+        assert!((reta.profundidade() - girada.profundidade()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inverter_o_contato_com_a_capsula_preserva_a_geometria() {
+        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 1.3))
+            .expect("ha contato");
+        let i = c.invertido();
+
+        assert_eq!(i.normal(), -c.normal());
+        assert_eq!(i.profundidade(), c.profundidade());
+        assert_eq!(i.invertido(), c);
+    }
+
+    #[test]
+    fn caixa_capsula_e_deterministica() {
+        let caso = || {
+            (
+                caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 1.3)),
+                caixa_capsula(
+                    Vec3::ONE,
+                    Pose::em(Vec3::ZERO),
+                    0.5,
+                    2.0,
+                    Pose::nova(Vec3::Y * 1.4, QUARTO_Z),
+                ),
+                caixa_capsula(
+                    Vec3::new(1.0, 2.0, 3.0),
+                    Pose::em(Vec3::ZERO),
+                    0.25,
+                    5.0,
+                    Pose::nova(Vec3::ZERO, QUARTO_Z),
+                ),
+            )
+        };
+
+        assert_eq!(caso(), caso());
+    }
+
+    #[test]
+    fn o_recorte_recusa_faixa_vazia() {
+        // Segmento paralelo a X, mas fora da fatia em Z: nao ha apoio de face.
+        let vazio = recorte_nas_outras_fatias(
+            Vec3::new(-3.0, 0.0, 5.0),
+            Vec3::X * 6.0,
+            Vec3::ONE,
+            1,
+        );
+
+        assert_eq!(vazio, None);
     }
 
     // --------------------------------------------------------- plano x plano --

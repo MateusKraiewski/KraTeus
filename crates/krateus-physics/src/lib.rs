@@ -32,8 +32,8 @@ pub mod trajetoria;
 
 pub use broadphase::{Colisor, Eixo, eixo_de_maior_variancia, envelopes, pares, pares_com_planos};
 pub use contato::{
-    Contato, MAX_PONTOS, Pose, caixa_plano, capsula_capsula, capsula_plano, esfera_caixa,
-    esfera_capsula, esfera_esfera, esfera_plano, plano_plano,
+    Contato, MAX_PONTOS, Pose, caixa_capsula, caixa_plano, capsula_capsula, capsula_plano,
+    esfera_caixa, esfera_capsula, esfera_esfera, esfera_plano, plano_plano,
 };
 pub use forma::{Aabb, Forma};
 pub use integrador::{

@@ -226,13 +226,7 @@ impl Lancamento {
     /// E o mesmo esquema do integrador do mundo, de proposito — amostrar a
     /// trajetoria com um metodo e simular com outro produziria previsao que nao
     /// bate com o que acontece.
-    fn integrar(
-        &self,
-        gravidade: f32,
-        dt: f32,
-        pontos: u32,
-        arrasto: Option<f32>,
-    ) -> Vec<Vec2> {
+    fn integrar(&self, gravidade: f32, dt: f32, pontos: u32, arrasto: Option<f32>) -> Vec<Vec2> {
         let mut posicao = Vec2::ZERO;
         let mut velocidade = Vec2::new(self.velocidade_horizontal, self.velocidade_vertical);
 
@@ -403,8 +397,7 @@ mod tests {
         let l = salto_padrao().resolver(G_TERRA).expect("possivel");
 
         let sem = l.amostrar(G_TERRA, Fidelidade::Analitica, 128);
-        let com =
-            l.amostrar(G_TERRA, Fidelidade::IntegradaComArrasto { coeficiente: 0.2 }, 128);
+        let com = l.amostrar(G_TERRA, Fidelidade::IntegradaComArrasto { coeficiente: 0.2 }, 128);
 
         let ultimo_sem = sem.last().expect("ha pontos");
         let ultimo_com = com.last().expect("ha pontos");

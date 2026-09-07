@@ -1747,8 +1747,8 @@ mod tests {
         // O caso que a matriz promete: o eixo paralelo a face da um trecho, e
         // nao um ponto. Um ponto so deixaria a capsula girar sobre a caixa.
         let deitada = Pose::nova(Vec3::Y * 1.4, QUARTO_Z);
-        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 2.0, deitada)
-            .expect("ha contato");
+        let c =
+            caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 2.0, deitada).expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 2, "capsula deitada apoia num trecho");
@@ -1764,8 +1764,8 @@ mod tests {
     fn capsula_deitada_curta_apoia_num_trecho_menor() {
         // Meia altura menor que a caixa: o trecho e o proprio segmento.
         let deitada = Pose::nova(Vec3::Y * 1.4, QUARTO_Z);
-        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada)
-            .expect("ha contato");
+        let c =
+            caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada).expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 2);
@@ -1778,8 +1778,8 @@ mod tests {
         // Deitada, mas passando da face: a normal deixa de ser um eixo da caixa
         // e o apoio vira um ponto na quina.
         let deitada = Pose::nova(Vec3::new(1.6, 1.4, 0.0), QUARTO_Z);
-        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada)
-            .expect("ha contato");
+        let c =
+            caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.5, deitada).expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 1, "so a quina toca");
@@ -1789,8 +1789,8 @@ mod tests {
     #[test]
     fn capsula_no_canto_da_caixa() {
         let canto = Pose::em(Vec3::new(1.3, 1.3, 1.3));
-        let c = caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.2, canto)
-            .expect("ha contato");
+        let c =
+            caixa_capsula(Vec3::ONE, Pose::em(Vec3::ZERO), 0.5, 0.2, canto).expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 1, "vertice nao apoia num trecho");
@@ -1839,8 +1839,8 @@ mod tests {
             Vec3::new(-1.6, -2.3, -0.8),
         ] {
             let pose = Pose::em(centro);
-            let c = caixa_capsula(meias, Pose::em(Vec3::ZERO), raio, 0.4, pose)
-                .expect("ha contato");
+            let c =
+                caixa_capsula(meias, Pose::em(Vec3::ZERO), raio, 0.4, pose).expect("ha contato");
 
             let nucleo_inicio = centro - Vec3::Y * 0.4;
             let nucleo_fim = centro + Vec3::Y * 0.4;
@@ -1860,8 +1860,8 @@ mod tests {
         let meias = Vec3::new(2.0, 0.5, 0.5);
         let capsula = Pose::em(Vec3::X * 2.4);
 
-        let reta = caixa_capsula(meias, Pose::em(Vec3::ZERO), 0.5, 0.3, capsula)
-            .expect("ha contato");
+        let reta =
+            caixa_capsula(meias, Pose::em(Vec3::ZERO), 0.5, 0.3, capsula).expect("ha contato");
         let girada = caixa_capsula(meias, Pose::nova(Vec3::ZERO, MEIA_VOLTA_Y), 0.5, 0.3, capsula)
             .expect("ha contato");
 

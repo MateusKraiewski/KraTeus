@@ -7,7 +7,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[lib]
+bench = false
+
 [lints]
 workspace = true
 
 [dependencies]
+glam.workspace = true
+krateus-core.workspace = true
+krateus-ecs.workspace = true
+thiserror.workspace = true

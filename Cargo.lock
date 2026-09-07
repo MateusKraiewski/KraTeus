@@ -322,6 +322,12 @@ version = "0.1.0"
 [[package]]
 name = "krateus-physics"
 version = "0.1.0"
+dependencies = [
+ "glam",
+ "krateus-core",
+ "krateus-ecs",
+ "thiserror",
+]
 
 [[package]]
 name = "krateus-render"

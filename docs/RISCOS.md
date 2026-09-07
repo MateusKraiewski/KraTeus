@@ -143,6 +143,51 @@ custa uma reinstalação para desfazer.
 Nada foi decidido em definitivo — o registro existe para que a preferência não se
 perca junto com a conversa em que foi dita.
 
+### Escalada observada em 2026-09-07 — a opção 3 acabou
+
+O registro acima dizia que o fluxo local (`cargo check` e `cargo clippy`, com o
+CI Linux como autoridade) funcionava até a Fase 3. **Isso deixou de ser
+verdade.**
+
+Nesta data, `rustc.exe` passou a ser bloqueado:
+
+```
+error: command failed: 'rustc':
+Uma política de Controle de Aplicativo bloqueou este arquivo. (os error 4551)
+```
+
+O binário é **o mesmo de 3 de setembro** — mesmo arquivo, mesma data de
+modificação, nenhuma atualização de toolchain entre as duas datas. O que mudou
+foi o veredito do Smart App Control sobre ele. Isso confirma, agora com um caso
+observado diretamente, o que o registro anterior já anotava: a decisão do SAC não
+é uma função estável do arquivo, e um fluxo de trabalho não pode ser construído
+sobre ela.
+
+O que ainda executa e o que não executa:
+
+| Binário | Estado em 2026-09-07 |
+|---|---|
+| `cargo.exe` | executa |
+| `clippy-driver.exe` | executa |
+| `rustc.exe` | **bloqueado** |
+| `rustfmt.exe` | **bloqueado** |
+| build scripts recém-compilados | **bloqueados** |
+| DLLs de proc-macro | **bloqueadas** |
+
+Foi testado usar `clippy-driver` no lugar do `rustc` (`RUSTC=clippy-driver cargo
+check`). Ele de fato compila — mas a troca invalida os fingerprints do cargo, o
+que força a reconstrução das dependências, e aí o bloqueio de build scripts e
+proc-macros interrompe tudo em `proc-macro2` e `quote`. Uma verificação a partir
+de árvore limpa é impossível; o que restava eram artefatos em cache de uma janela
+em que o SAC ainda deixava passar.
+
+**Consequência para a decisão pendente.** Ela deixou de ser sobre GPU. Não se
+trata mais de "a Fase 3 precisa de uma janela": nenhuma fase pode ser verificada
+localmente, de nenhuma forma. O CI passou de autoridade a **única** forma de
+compilar o projeto. Isso é viável — o CI é completo e roda nas duas plataformas —
+mas o ciclo de retorno passou de segundos a minutos, e erros de compilação e de
+formatação só aparecem depois de um push.
+
 ---
 
 ## R02 — Determinismo em ponto flutuante entre plataformas

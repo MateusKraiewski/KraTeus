@@ -17,11 +17,15 @@ enquanto ainda são baratas de mudar.
 
 ---
 
-## Onde o trabalho parou — 2026-09-04
+## Onde o trabalho parou — 2026-09-07
 
 Desenvolvimento **pausado por decisão**, não por dificuldade. A Fase 2 está
 completa e verificada; a Fase 3 tem o que não depende de GPU, e o restante está
 bloqueado pelo ambiente.
+
+A pausa foi aberta uma vez, para a **Fase 5**: a ferramenta de balística do §6 e
+o integrador são CPU pura, com critério de aceite verificável sem tela. Ver
+"Fase 5" abaixo para o recorte exato do que existe e do que não existe.
 
 ### O que existe e funciona
 
@@ -32,6 +36,7 @@ bloqueado pelo ambiente.
 | `krateus-simulation` | laço de timestep fixo + teste de determinismo cross-platform |
 | `krateus-rhi` | vocabulário mínimo + backend nulo que valida o contrato ([D12](DECISOES.md) — experimental) |
 | `krateus-render` | Render World completo: `extract` → `prepare` → `queue` → `render` |
+| `krateus-physics` | integrador semi-implícito e ferramenta de trajetória — **início** da Fase 5 |
 
 A fronteira **ECS → Render World → RHI** está validada de ponta a ponta em CPU,
 com teste de integração que vai do mundo lógico ao comando de GPU sem janela.
@@ -41,17 +46,33 @@ com teste de integração que vai do mundo lógico ao comando de GPU sem janela.
 O critério de aceite da Fase 3 — *"triângulo colorido na tela, com resize e
 alt-tab estáveis"* — exige janela e GPU nesta máquina, e o
 [R01](RISCOS.md) impede. As vias de autorização administrada foram testadas e
-descartadas; sobram três caminhos, todos com custo, nenhum técnico:
+descartadas; sobram dois caminhos, ambos com custo, nenhum técnico:
 
 1. desativar o Smart App Control (irreversível sem reinstalar o Windows);
-2. outro ambiente com GPU nativa;
-3. seguir sem verificação visual, o que a Fase 3 não permite.
+2. outro ambiente com GPU nativa.
+
+**Em 2026-09-07 o bloqueio se agravou**: o próprio `rustc.exe` passou a ser
+bloqueado — o mesmo binário que funcionava dias antes, sem atualização de
+toolchain. Não há mais compilação local de nenhuma espécie, nem `cargo check`,
+nem `cargo fmt`. O CI deixou de ser autoridade e passou a ser o **único**
+compilador do projeto. O registro completo, com a tabela do que ainda executa,
+está em [RISCOS.md](RISCOS.md), R01.
+
+Isso muda o que a decisão de ambiente significa: ela não é mais sobre poder ver
+um triângulo, é sobre poder compilar.
 
 ### Por que parar aqui e não continuar
 
 O que sobrava sem GPU era pequeno e especulativo. Escrever mais camadas sem
 consumidor produziria abstração que ninguém exercitou — exatamente o que o §19
 proíbe, e o oposto do que as decisões deste projeto vinham fazendo.
+
+A física é a exceção, e por um motivo concreto: o documento de visão descreve a
+ferramenta de trajetória em detalhe — o consumidor está especificado —, o cálculo
+é CPU pura, e o aceite ("conservação de energia dentro de tolerância", "analítica
+e integrada convergem") se verifica em teste. Colisão, broadphase e character
+controller **não** foram escritos: esses ainda não têm consumidor, e os gizmos de
+debug dependem do renderer.
 
 ### Para retomar
 
@@ -240,7 +261,7 @@ que a separação paga.
 
 ---
 
-## Fase 5 — Física e ferramentas de visualização
+## Fase 5 — Física e ferramentas de visualização 🚧
 
 **Objetivo.** §6, incluindo explicitamente o exemplo de balística.
 
@@ -263,6 +284,27 @@ que a separação paga.
 - Pilha de 100 caixas estável por 60 s sem afundar
 - Solver determinístico: mesmo input, mesmo resultado, cross-platform
 - Trajetória analítica e integrada convergem dentro de tolerância
+
+**Estado em 2026-09-07 — começada fora de ordem, sem GPU**
+
+| Entregável | Estado |
+|---|---|
+| Integrador semi-implícito; gravidade, forças, impulsos | ✅ `integrador.rs` |
+| Ferramenta de trajetória (§6) | ✅ `trajetoria.rs` |
+| Níveis de fidelidade — analítico, integrado, com arrasto | ✅ `Fidelidade` |
+| Shapes, broadphase, narrowphase, contato | ⬜ |
+| Raycast, sweep, triggers, character controller, projéteis | ⬜ |
+| Gizmos de debug | ⬜ depende do renderer |
+
+Dos quatro critérios de aceite, dois já são verificáveis e estão cobertos —
+conservação de energia num oscilador e convergência entre analítica e integrada.
+Os outros dois dependem de resolução de contato, que não existe.
+
+O integrador não reusa o `Transform` de `krateus-render`: define `Posicao`
+própria. Não é só evitar dependência na direção errada — o renderer precisa de
+escala, a física não simula escala, e a orientação de um corpo rígido está ligada
+à inércia, não à apresentação. Um sistema de sincronização liga os dois quando
+houver quem precise.
 
 ---
 

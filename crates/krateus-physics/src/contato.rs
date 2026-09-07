@@ -40,7 +40,7 @@
 //! | Capsula × Plano | ✅ semiespaco |
 //! | Caixa × Plano | ✅ semiespaco |
 //! | Plano × Plano | ✅ sem contato finito |
-//! | Esfera × Caixa | ⬜ grupo C |
+//! | Esfera × Caixa | ✅ ponto mais proximo na OBB |
 //! | Caixa × Capsula | ⬜ grupo C |
 //! | Caixa × Caixa | ⬜ grupo D |
 //!
@@ -577,6 +577,70 @@ pub fn caixa_plano(meias_extensoes_a: Vec3, a: Pose, normal_b: Vec3, b: Pose) ->
     Some(Contato::novo(-n, -menor, &pontos[..quantidade]))
 }
 
+
+// ------------------------------------------- grupo C: caixa vs nucleo inflado --
+
+/// Contato entre uma esfera (A) e uma caixa (B).
+///
+/// Resolve em espaco local da caixa, onde a OBB vira uma AABB e o ponto mais
+/// proximo e um `clamp`. Dois regimes:
+///
+/// - **centro fora da caixa** — o ponto mais proximo da superficie da a direcao
+///   e a distancia, e o contato sai exato;
+/// - **centro dentro da caixa** — nao ha direcao a extrair de uma distancia
+///   zero. A saida e pela face de menor penetracao, que e a menor translacao que
+///   resolve o contato.
+///
+/// O segundo regime nao e um caso raro a ignorar: e o que acontece quando uma
+/// esfera pequena e empurrada para dentro de uma parede grossa, e sem ele a
+/// normal seria indefinida justamente quando mais se precisa dela.
+#[must_use]
+pub fn esfera_caixa(raio_a: f32, a: Pose, meias_extensoes_b: Vec3, b: Pose) -> Option<Contato> {
+    // A transposta de uma matriz de rotacao e a sua inversa, e nao precisa de
+    // divisao — ao contrario de `Quat::inverse`.
+    let m = Mat3::from_quat(b.rotacao);
+    let local = m.transpose() * (a.posicao - b.posicao);
+    let proximo = local.clamp(-meias_extensoes_b, meias_extensoes_b);
+
+    let delta = proximo - local;
+    let distancia_quadrada = delta.length_squared();
+
+    if distancia_quadrada > EPS_DIRECAO_QUADRADA {
+        if distancia_quadrada > raio_a * raio_a {
+            return None;
+        }
+
+        let distancia = distancia_quadrada.sqrt();
+        let normal = m * (delta / distancia);
+        let ponto = a.posicao + normal * raio_a;
+
+        return Some(Contato::novo(normal, raio_a - distancia, &[ponto]));
+    }
+
+    // Centro dentro (ou exatamente sobre a superficie). `folga` e quanto falta
+    // para cada face em cada eixo; a menor delas e a saida mais curta.
+    let folga = meias_extensoes_b - local.abs();
+    let (eixo, saida) = if folga.x <= folga.y && folga.x <= folga.z {
+        (Vec3::X, folga.x)
+    } else if folga.y <= folga.z {
+        (Vec3::Y, folga.y)
+    } else {
+        (Vec3::Z, folga.z)
+    };
+
+    // Empate entre eixos resolve em X, depois Y, depois Z — as comparacoes acima
+    // usam `<=` para que o primeiro vença. Centro exatamente no plano medio de um
+    // eixo nao define lado; ali a saida e no sentido positivo.
+    let sentido = if eixo.dot(local) < 0.0 { -1.0 } else { 1.0 };
+
+    // A normal aponta de A para B, e portanto **contra** a saida: separar move a
+    // esfera por `−normal * profundidade`, que e para fora pela face escolhida.
+    let normal = m * (eixo * -sentido);
+    let ponto = a.posicao + normal * raio_a;
+
+    Some(Contato::novo(normal, raio_a + saida, &[ponto]))
+}
+
 /// Dois semiespacos nunca produzem contato finito.
 ///
 /// Ou nao se cruzam, ou se cruzam num volume infinito — em nenhum dos casos ha
@@ -600,6 +664,12 @@ mod tests {
 
     /// Meia volta em torno de X, exata em `f32`.
     const MEIA_VOLTA_X: Quat = Quat::from_xyzw(1.0, 0.0, 0.0, 0.0);
+
+    /// Meia volta em torno de Y, exata em `f32`.
+    const MEIA_VOLTA_Y: Quat = Quat::from_xyzw(0.0, 1.0, 0.0, 0.0);
+
+    /// Um quarto de volta em torno de Y.
+    const QUARTO_Y: Quat = Quat::from_xyzw(0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2);
 
     fn perto(a: Vec3, b: Vec3) -> bool {
         (a - b).abs().max_element() < 1e-5
@@ -1084,6 +1154,226 @@ mod tests {
             }
         }
     }
+
+
+    // --------------------------------------------------------- esfera x caixa --
+
+    /// Distancia de um ponto a uma caixa alinhada centrada na origem.
+    ///
+    /// Formula fechada e independente da implementacao: serve de oraculo.
+    fn distancia_ponto_caixa(ponto: Vec3, meias: Vec3) -> f32 {
+        let fora = (ponto.abs() - meias).max(Vec3::ZERO);
+        fora.length()
+    }
+
+    #[test]
+    fn esfera_longe_da_caixa_nao_toca() {
+        let c = esfera_caixa(0.5, Pose::em(Vec3::X * 3.0), Vec3::ONE, Pose::em(Vec3::ZERO));
+
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn esfera_tangente_a_face_da_caixa() {
+        let c = esfera_caixa(1.0, Pose::em(Vec3::X * 2.0), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("encostar conta");
+        invariantes(&c);
+
+        assert_eq!(c.profundidade(), 0.0);
+        assert_eq!(c.normal(), Vec3::NEG_X, "de A (esfera) para B (caixa)");
+        assert_eq!(c.pontos(), [Vec3::X].as_slice());
+    }
+
+    #[test]
+    fn esfera_penetrando_a_face_da_caixa() {
+        let c = esfera_caixa(1.0, Pose::em(Vec3::X * 1.5), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.normal(), Vec3::NEG_X);
+        assert!((c.profundidade() - 0.5).abs() < 1e-6);
+        assert_eq!(c.pontos(), [Vec3::X * 0.5].as_slice());
+        assert_eq!(c.ponto_em_b(0), Vec3::X, "o ponto da caixa mais proximo");
+    }
+
+    #[test]
+    fn esfera_na_regiao_do_canto() {
+        // Fora de todas as tres faces ao mesmo tempo: o ponto mais proximo e o
+        // vertice, e a normal e diagonal.
+        let centro = Vec3::splat(1.5);
+        let c = esfera_caixa(1.0, Pose::em(centro), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        invariantes(&c);
+
+        let esperada = (Vec3::ONE - centro).normalize();
+        assert!(perto(c.normal(), esperada), "normal {} != {esperada}", c.normal());
+        assert!(perto(c.ponto_em_b(0), Vec3::ONE), "o vertice da caixa");
+    }
+
+    #[test]
+    fn esfera_na_regiao_da_aresta() {
+        // Fora em dois eixos, dentro no terceiro.
+        let centro = Vec3::new(1.4, 1.4, 0.0);
+        let c = esfera_caixa(1.0, Pose::em(centro), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert!(perto(c.ponto_em_b(0), Vec3::new(1.0, 1.0, 0.0)), "um ponto da aresta");
+        assert!(c.normal().z.abs() < 1e-6, "a normal nao sai do plano da aresta");
+    }
+
+    #[test]
+    fn a_profundidade_bate_com_o_oraculo_de_ponto_caixa() {
+        let meias = Vec3::new(1.0, 2.0, 0.5);
+        for centro in [
+            Vec3::new(1.5, 0.0, 0.0),
+            Vec3::new(1.2, 2.3, 0.0),
+            Vec3::new(1.1, 2.1, 0.6),
+            Vec3::new(0.0, 2.4, 0.0),
+            Vec3::new(-1.3, -2.2, -0.7),
+        ] {
+            let raio = 1.0;
+            let c = esfera_caixa(raio, Pose::em(centro), meias, Pose::em(Vec3::ZERO))
+                .expect("ha contato");
+            let esperada = raio - distancia_ponto_caixa(centro, meias);
+
+            assert!(
+                (c.profundidade() - esperada).abs() < 1e-5,
+                "centro {centro}: {} != {esperada}",
+                c.profundidade()
+            );
+        }
+    }
+
+    #[test]
+    fn o_oraculo_concorda_sobre_a_ausencia_de_contato() {
+        let meias = Vec3::new(1.0, 2.0, 0.5);
+        for passo in 0..20u16 {
+            let centro = Vec3::new(2.05 + f32::from(passo) * 0.1, 0.0, 0.0);
+            let contato = esfera_caixa(1.0, Pose::em(centro), meias, Pose::em(Vec3::ZERO));
+
+            assert!(distancia_ponto_caixa(centro, meias) > 1.0, "a cena precisa estar separada");
+            assert_eq!(contato, None, "centro {centro}");
+        }
+    }
+
+    #[test]
+    fn esfera_dentro_da_caixa_sai_pela_face_mais_perto() {
+        // Centro em (0,6, 0, 0) numa caixa unitaria: a face +X esta a 0,4, e as
+        // outras a 1. A saida e por +X, entao a normal aponta para −X.
+        let c = esfera_caixa(0.25, Pose::em(Vec3::X * 0.6), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("dentro tambem e contato");
+        invariantes(&c);
+
+        assert_eq!(c.normal(), Vec3::NEG_X);
+        assert!((c.profundidade() - 0.65).abs() < 1e-6, "raio + folga = 0,25 + 0,4");
+        // Separar move A por −normal * profundidade, e isso poe a esfera fora.
+        let separada = Vec3::X * 0.6 - c.normal() * c.profundidade();
+        assert!(separada.x >= 1.25 - 1e-5, "a esfera precisa sair da caixa: {separada}");
+    }
+
+    #[test]
+    fn esfera_dentro_sai_pelo_lado_negativo_quando_e_mais_perto() {
+        let c = esfera_caixa(0.25, Pose::em(Vec3::Y * -0.7), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.normal(), Vec3::Y, "a saida e por −Y, entao a normal aponta para +Y");
+    }
+
+    #[test]
+    fn esfera_no_centro_da_caixa_usa_o_menor_semi_eixo() {
+        // Caixa achatada em Z: a saida mais curta e por Z, mesmo com o centro
+        // exatamente no meio.
+        let c =
+            esfera_caixa(0.1, Pose::em(Vec3::ZERO), Vec3::new(3.0, 2.0, 0.5), Pose::em(Vec3::ZERO))
+                .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.normal(), Vec3::NEG_Z, "sem lado definido, o sentido positivo");
+        assert!((c.profundidade() - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empate_entre_eixos_resolve_em_x() {
+        // Cubo com a esfera no centro: os tres eixos empatam.
+        let c = esfera_caixa(0.5, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+
+        assert_eq!(c.normal(), Vec3::NEG_X);
+    }
+
+    #[test]
+    fn a_caixa_girada_muda_qual_extensao_a_esfera_encontra() {
+        // Meia volta em Y e exata em f32 e leva X em −X: uma caixa alongada em X
+        // continua alongada em X.
+        let meias = Vec3::new(2.0, 0.5, 0.5);
+        let reta = esfera_caixa(1.0, Pose::em(Vec3::X * 2.5), meias, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        let girada =
+            esfera_caixa(1.0, Pose::em(Vec3::X * 2.5), meias, Pose::nova(Vec3::ZERO, MEIA_VOLTA_Y))
+                .expect("ha contato");
+
+        assert_eq!(reta.profundidade(), girada.profundidade());
+        assert_eq!(reta.normal(), girada.normal());
+    }
+
+    #[test]
+    fn um_quarto_de_volta_troca_o_alcance_dos_eixos() {
+        // Caixa alongada em X, girada um quarto em Y: passa a se estender em Z.
+        let meias = Vec3::new(2.0, 0.5, 0.5);
+        let pose = Pose::nova(Vec3::ZERO, QUARTO_Y);
+
+        // Em X ela agora e curta: a 1,6 de distancia, com raio 1, ha contato
+        // apenas porque a meia extensao virou 0,5.
+        let em_x = esfera_caixa(1.0, Pose::em(Vec3::X * 1.4), meias, pose).expect("ha contato");
+        assert!((em_x.profundidade() - 0.1).abs() < 1e-4, "{}", em_x.profundidade());
+
+        // Em Z ela ficou longa, e a mesma distancia esta dentro dela.
+        let em_z = esfera_caixa(1.0, Pose::em(Vec3::Z * 1.4), meias, pose).expect("ha contato");
+        assert!(em_z.profundidade() > 1.0, "{}", em_z.profundidade());
+    }
+
+    #[test]
+    fn a_caixa_acompanha_a_posicao() {
+        let longe = Pose::em(Vec3::new(10.0, -5.0, 3.0));
+        let c = esfera_caixa(1.0, Pose::em(Vec3::new(11.5, -5.0, 3.0)), Vec3::ONE, longe)
+            .expect("ha contato");
+
+        assert_eq!(c.normal(), Vec3::NEG_X);
+        assert!((c.profundidade() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inverter_o_contato_com_a_caixa_preserva_a_geometria() {
+        let c = esfera_caixa(1.0, Pose::em(Vec3::X * 1.5), Vec3::ONE, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
+        let i = c.invertido();
+
+        assert_eq!(i.normal(), -c.normal());
+        assert_eq!(i.profundidade(), c.profundidade());
+        assert_eq!(i.pontos()[0], c.ponto_em_b(0));
+        assert_eq!(i.invertido(), c);
+    }
+
+    #[test]
+    fn esfera_caixa_e_deterministica() {
+        let caso = || {
+            (
+                esfera_caixa(1.0, Pose::em(Vec3::X * 1.5), Vec3::ONE, Pose::em(Vec3::ZERO)),
+                esfera_caixa(0.25, Pose::em(Vec3::X * 0.6), Vec3::ONE, Pose::em(Vec3::ZERO)),
+                esfera_caixa(
+                    1.0,
+                    Pose::em(Vec3::splat(1.3)),
+                    Vec3::ONE,
+                    Pose::nova(Vec3::ZERO, QUARTO_Y),
+                ),
+            )
+        };
+
+        assert_eq!(caso(), caso());
+    }
+
 
     // --------------------------------------------------------- plano x plano --
 

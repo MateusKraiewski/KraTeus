@@ -448,8 +448,7 @@ mod tests {
 
     #[test]
     fn a_saida_nao_tem_duplicatas() {
-        let cena: Vec<_> =
-            (0..20u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.3))).collect();
+        let cena: Vec<_> = (0..20u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.3))).collect();
         let mut p = pares(&cena);
         let antes = p.len();
 
@@ -468,8 +467,7 @@ mod tests {
 
     #[test]
     fn a_lista_sai_ordenada() {
-        let cena: Vec<_> =
-            (0..15u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.3))).collect();
+        let cena: Vec<_> = (0..15u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.3))).collect();
         let p = pares(&cena);
         let mut ordenada = p.clone();
         ordenada.sort_unstable();
@@ -480,8 +478,7 @@ mod tests {
 
     #[test]
     fn permutar_a_entrada_nao_muda_a_saida() {
-        let base: Vec<_> =
-            (0..16u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.35))).collect();
+        let base: Vec<_> = (0..16u16).map(|i| corpo(i, Vec3::X * (f32::from(i) * 0.35))).collect();
         let esperado = pares(&base);
         assert!(!esperado.is_empty(), "a cena precisa gerar pares");
 

@@ -728,13 +728,7 @@ mod tests {
 
     #[test]
     fn esfera_longe_da_capsula_nao_toca() {
-        let c = esfera_capsula(
-            0.5,
-            Pose::em(Vec3::X * 3.0),
-            0.5,
-            1.0,
-            Pose::em(Vec3::ZERO),
-        );
+        let c = esfera_capsula(0.5, Pose::em(Vec3::X * 3.0), 0.5, 1.0, Pose::em(Vec3::ZERO));
 
         assert_eq!(c, None);
     }
@@ -787,15 +781,8 @@ mod tests {
     fn capsulas_paralelas_dao_dois_pontos() {
         // Duas capsulas em pe, lado a lado: o manifold precisa dos dois extremos,
         // senao uma poderia girar livremente sobre a outra.
-        let c = capsula_capsula(
-            1.0,
-            2.0,
-            Pose::em(Vec3::ZERO),
-            1.0,
-            2.0,
-            Pose::em(Vec3::X * 1.5),
-        )
-        .expect("ha contato");
+        let c = capsula_capsula(1.0, 2.0, Pose::em(Vec3::ZERO), 1.0, 2.0, Pose::em(Vec3::X * 1.5))
+            .expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 2);
@@ -845,15 +832,8 @@ mod tests {
     fn capsulas_paralelas_sem_faixa_comum_dao_um_ponto() {
         // Uma acima da outra: as projecoes nao se cruzam, o contato e entre
         // pontas, e um ponto basta.
-        let c = capsula_capsula(
-            1.0,
-            2.0,
-            Pose::em(Vec3::ZERO),
-            1.0,
-            2.0,
-            Pose::em(Vec3::Y * 4.5),
-        )
-        .expect("ha contato");
+        let c = capsula_capsula(1.0, 2.0, Pose::em(Vec3::ZERO), 1.0, 2.0, Pose::em(Vec3::Y * 4.5))
+            .expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 1);
@@ -879,14 +859,7 @@ mod tests {
 
     #[test]
     fn capsulas_separadas_nao_tocam() {
-        let c = capsula_capsula(
-            0.5,
-            1.0,
-            Pose::em(Vec3::ZERO),
-            0.5,
-            1.0,
-            Pose::em(Vec3::X * 5.0),
-        );
+        let c = capsula_capsula(0.5, 1.0, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 5.0));
 
         assert_eq!(c, None);
     }
@@ -894,15 +867,9 @@ mod tests {
     #[test]
     fn capsula_invertida_no_eixo_e_a_mesma_capsula() {
         // Meia volta em X troca as pontas de lugar; a geometria nao muda.
-        let normal = capsula_capsula(
-            0.5,
-            1.0,
-            Pose::em(Vec3::ZERO),
-            0.5,
-            1.0,
-            Pose::em(Vec3::X * 0.8),
-        )
-        .expect("ha contato");
+        let normal =
+            capsula_capsula(0.5, 1.0, Pose::em(Vec3::ZERO), 0.5, 1.0, Pose::em(Vec3::X * 0.8))
+                .expect("ha contato");
         let girada = capsula_capsula(
             0.5,
             1.0,
@@ -1031,13 +998,8 @@ mod tests {
     #[test]
     fn caixa_apoiada_da_quatro_pontos() {
         // O caso que a D15 existe para suportar: uma face apoiada.
-        let c = caixa_plano(
-            Vec3::ONE,
-            Pose::em(Vec3::Y * 0.5),
-            Vec3::Y,
-            Pose::em(Vec3::ZERO),
-        )
-        .expect("ha contato");
+        let c = caixa_plano(Vec3::ONE, Pose::em(Vec3::Y * 0.5), Vec3::Y, Pose::em(Vec3::ZERO))
+            .expect("ha contato");
         invariantes(&c);
 
         assert_eq!(c.pontos().len(), 4);
@@ -1127,12 +1089,9 @@ mod tests {
 
     #[test]
     fn dois_planos_nunca_produzem_contato() {
-        for (na, nb) in [
-            (Vec3::Y, Vec3::Y),
-            (Vec3::Y, Vec3::NEG_Y),
-            (Vec3::Y, Vec3::X),
-            (Vec3::ZERO, Vec3::Y),
-        ] {
+        for (na, nb) in
+            [(Vec3::Y, Vec3::Y), (Vec3::Y, Vec3::NEG_Y), (Vec3::Y, Vec3::X), (Vec3::ZERO, Vec3::Y)]
+        {
             assert_eq!(plano_plano(na, Pose::em(Vec3::ZERO), nb, Pose::em(Vec3::X)), None);
         }
     }
@@ -1163,11 +1122,7 @@ mod tests {
 
     #[test]
     fn a_ordem_de_entrada_nao_muda_o_contato() {
-        let pontos = [
-            Vec3::new(2.0, 0.0, 0.0),
-            Vec3::new(1.0, 5.0, 0.0),
-            Vec3::new(1.0, 0.0, 9.0),
-        ];
+        let pontos = [Vec3::new(2.0, 0.0, 0.0), Vec3::new(1.0, 5.0, 0.0), Vec3::new(1.0, 0.0, 9.0)];
         let mut ao_contrario = pontos;
         ao_contrario.reverse();
 

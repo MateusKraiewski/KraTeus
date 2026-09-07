@@ -230,6 +230,52 @@ pub fn pares(corpos: &[(Entity, Aabb)]) -> Vec<(Entity, Entity)> {
     saida
 }
 
+/// Pares de cada plano contra cada corpo que nao seja plano.
+///
+/// Um semiespaco nao tem envelope finito e por isso nao passa por [`pares`]
+/// ([D14](../../../docs/DECISOES.md)). Sem esta passada, nenhum corpo jamais
+/// encontraria o chao — as combinacoes com plano seriam inalcancaveis.
+///
+/// A [D16](../../../docs/DECISOES.md) manda que ela fique **separada**, e nao
+/// escondida como um ramo dentro da varredura: `pares` continua uma funcao pura
+/// com oraculo de forca bruta, e o custo do plano aparece onde acontece.
+///
+/// Custa `O(planos × corpos)`, e se justifica porque planos sao poucos — o chao,
+/// as paredes de uma arena.
+///
+/// Pares plano × plano nao sao gerados: dois semiespacos nao produzem contato
+/// finito.
+///
+/// # Forma da saida
+///
+/// A mesma de [`pares`]: entidade menor primeiro dentro do par, lista ordenada,
+/// sem duplicata. Quem consome nao precisa saber de qual passada o par veio.
+#[must_use]
+pub fn pares_com_planos(world: &mut World) -> Vec<(Entity, Entity)> {
+    let mut planos = Vec::new();
+    let mut corpos = Vec::new();
+
+    // Ordem de iteracao do ECS, que e estavel.
+    for (entidade, _, colisor) in world.query::<(Entity, &Posicao, &Colisor)>() {
+        if colisor.0.e_plano() {
+            planos.push(entidade);
+        } else {
+            corpos.push(entidade);
+        }
+    }
+
+    let mut saida = Vec::with_capacity(planos.len() * corpos.len());
+    for plano in &planos {
+        for corpo in &corpos {
+            saida.push(par_canonico(*plano, *corpo));
+        }
+    }
+
+    saida.sort_unstable();
+    saida.dedup();
+    saida
+}
+
 /// Par com a entidade menor primeiro.
 fn par_canonico(a: Entity, b: Entity) -> (Entity, Entity) {
     if a <= b { (a, b) } else { (b, a) }
@@ -597,6 +643,84 @@ mod tests {
 
         assert_eq!(envs.len(), 1, "o semiespaco nao tem envelope finito");
         assert_eq!(envs[0].0, esfera);
+    }
+
+    // ------------------------------------------------ a passada dos planos --
+
+    fn mundo_com_chao_e_corpos() -> (World, Entity, Vec<Entity>) {
+        let mut world = World::new();
+        let chao = world.spawn((Posicao(Vec3::ZERO), Colisor(Forma::Plano { normal: Vec3::Y })));
+        let corpos = (0..3u16)
+            .map(|i| {
+                let altura = Vec3::Y * (f32::from(i) + 1.0);
+                world.spawn((Posicao(altura), Colisor(Forma::Esfera { raio: 0.5 })))
+            })
+            .collect::<Vec<_>>();
+        (world, chao, corpos)
+    }
+
+    #[test]
+    fn cada_plano_encontra_cada_corpo() {
+        let (mut world, chao, corpos) = mundo_com_chao_e_corpos();
+        let p = pares_com_planos(&mut world);
+
+        assert_eq!(p.len(), 3, "um par por corpo");
+        for corpo in corpos {
+            assert!(p.contains(&par_canonico(chao, corpo)), "faltou o par com {corpo:?}");
+        }
+    }
+
+    #[test]
+    fn a_passada_dos_planos_sai_canonica() {
+        let (mut world, _, _) = mundo_com_chao_e_corpos();
+        let p = pares_com_planos(&mut world);
+        let mut ordenada = p.clone();
+        ordenada.sort_unstable();
+
+        assert_eq!(p, ordenada);
+        for (a, b) in &p {
+            assert!(a <= b, "par nao canonico: {a:?}, {b:?}");
+        }
+    }
+
+    #[test]
+    fn dois_planos_nao_formam_par_entre_si() {
+        let mut world = World::new();
+        world.spawn((Posicao(Vec3::ZERO), Colisor(Forma::Plano { normal: Vec3::Y })));
+        world.spawn((Posicao(Vec3::X), Colisor(Forma::Plano { normal: Vec3::X })));
+
+        assert!(pares_com_planos(&mut world).is_empty());
+    }
+
+    #[test]
+    fn sem_plano_a_passada_nao_produz_nada() {
+        let mut world = World::new();
+        world.spawn((Posicao(Vec3::ZERO), Colisor(Forma::Esfera { raio: 1.0 })));
+
+        assert!(pares_com_planos(&mut world).is_empty());
+    }
+
+    #[test]
+    fn as_duas_passadas_nao_se_sobrepoem() {
+        // A broadphase ignora o plano; a passada dos planos ignora o resto.
+        // Juntas cobrem a cena sem repetir par.
+        let (mut world, chao, _) = mundo_com_chao_e_corpos();
+
+        let da_varredura = pares(&envelopes(&mut world));
+        let dos_planos = pares_com_planos(&mut world);
+
+        for par in &da_varredura {
+            assert_ne!(par.0, chao, "o chao nao devia sair da varredura");
+            assert_ne!(par.1, chao);
+            assert!(!dos_planos.contains(par), "par repetido nas duas passadas");
+        }
+    }
+
+    #[test]
+    fn a_passada_dos_planos_e_deterministica() {
+        let (mut world, _, _) = mundo_com_chao_e_corpos();
+
+        assert_eq!(pares_com_planos(&mut world), pares_com_planos(&mut world));
     }
 
     #[test]

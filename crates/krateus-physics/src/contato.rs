@@ -577,7 +577,6 @@ pub fn caixa_plano(meias_extensoes_a: Vec3, a: Pose, normal_b: Vec3, b: Pose) ->
     Some(Contato::novo(-n, -menor, &pontos[..quantidade]))
 }
 
-
 // ------------------------------------------- grupo C: caixa vs nucleo inflado --
 
 /// Contato entre uma esfera (A) e uma caixa (B).
@@ -1155,7 +1154,6 @@ mod tests {
         }
     }
 
-
     // --------------------------------------------------------- esfera x caixa --
 
     /// Distancia de um ponto a uma caixa alinhada centrada na origem.
@@ -1373,7 +1371,6 @@ mod tests {
 
         assert_eq!(caso(), caso());
     }
-
 
     // --------------------------------------------------------- plano x plano --
 

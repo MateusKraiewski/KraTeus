@@ -42,7 +42,7 @@
 //! | Plano × Plano | ✅ sem contato finito |
 //! | Esfera × Caixa | ✅ ponto mais proximo na OBB |
 //! | Caixa × Capsula | ✅ distancia fechada, e SAT quando atravessa |
-//! | Caixa × Caixa | ⬜ grupo D |
+//! | Caixa × Caixa | ✅ SAT de quinze eixos e clipping |
 //!
 //! Nao ha despacho geral por [`Forma`](crate::Forma) ainda, **de proposito**: um
 //! despacho que devolvesse `None` para os pares que faltam seria silenciosamente
@@ -65,6 +65,8 @@
 //! `contato(A, B)` e `contato(B, A)` invertido sejam comparaveis por igualdade.
 
 use glam::{Mat3, Quat, Vec3};
+
+use crate::forma::Forma;
 
 /// Posicao e orientacao de um corpo.
 ///
@@ -349,6 +351,25 @@ fn mais_proximos(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> MaisProximos {
     }
 }
 
+/// Direcao de A para B quando os nucleos se cruzam.
+///
+/// Usa a diferenca entre os centros dos segmentos. Se **eles** tambem
+/// coincidirem, os corpos sao concentricos e nenhuma direcao e derivavel da
+/// entrada: a configuracao e simetrica sob troca, entao **nenhuma** escolha
+/// preserva `contato(A, B) == contato(B, A).invertido()`. `+Y` e a saida fixa,
+/// porque num mundo com gravidade em `−Y` separar para cima e o menos
+/// surpreendente.
+fn direcao_entre_centros(a: Nucleo, b: Nucleo) -> Vec3 {
+    let entre = (b.inicio + b.fim) * 0.5 - (a.inicio + a.fim) * 0.5;
+    let comprimento_quadrado = entre.length_squared();
+
+    if comprimento_quadrado > EPS_DIRECAO_QUADRADA {
+        entre / comprimento_quadrado.sqrt()
+    } else {
+        Vec3::Y
+    }
+}
+
 /// Contato entre dois nucleos inflados.
 fn contato_entre_nucleos(a: Nucleo, b: Nucleo) -> Option<Contato> {
     let proximos = mais_proximos(a.inicio, a.fim, b.inicio, b.fim);
@@ -368,10 +389,11 @@ fn contato_entre_nucleos(a: Nucleo, b: Nucleo) -> Option<Contato> {
         let d = distancia_quadrada.sqrt();
         (delta / d, d)
     } else {
-        // Nucleos coincidentes: qualquer direcao serve, e nenhuma e melhor. `+Y`
-        // e a escolha fixa, porque num mundo com gravidade em `−Y` separar para
-        // cima e o menos surpreendente.
-        (Vec3::Y, 0.0)
+        // Os nucleos se cruzam: nao ha direcao a extrair da distancia. A dos
+        // centros serve, e tem uma propriedade que uma direcao fixa nao tem —
+        // ela **inverte** quando A e B trocam de lugar, que e o que o contrato
+        // de simetria da D15 exige.
+        (direcao_entre_centros(a, b), 0.0)
     };
 
     let profundidade = soma_dos_raios - distancia;
@@ -923,6 +945,420 @@ fn recorte_nas_outras_fatias(
     }
 
     (lo < hi).then_some((lo, hi))
+}
+
+/// Quanto um eixo de aresta precisa ganhar de um eixo de face para ser escolhido.
+///
+/// Os eixos aresta-aresta saem de produtos vetoriais entre eixos quase
+/// paralelos, e ali a direcao normalizada carrega erro relativo grande. Quando
+/// uma face e uma aresta separam quase igual, a face e a resposta confiavel — e
+/// a que produz um manifold de quatro pontos em vez de um. O valor e uma folga
+/// em unidades de mundo, nao uma tolerancia de igualdade.
+const VANTAGEM_MINIMA_DA_ARESTA: f32 = 1e-3;
+
+/// Uma caixa ja resolvida no mundo.
+///
+/// Agrupa o que sempre anda junto — extensoes, orientacao e centro — para que as
+/// rotinas do SAT nao precisem de sete parametros soltos cada uma.
+#[derive(Debug, Clone, Copy)]
+struct CaixaNoMundo {
+    meias: Vec3,
+    m: Mat3,
+    centro: Vec3,
+}
+
+impl CaixaNoMundo {
+    fn nova(meias: Vec3, pose: Pose) -> Self {
+        Self { meias, m: Mat3::from_quat(pose.rotacao), centro: pose.posicao }
+    }
+
+    /// Alcance da caixa projetada num eixo unitario.
+    fn alcance(&self, eixo: Vec3) -> f32 {
+        self.meias.x * self.m.x_axis.dot(eixo).abs()
+            + self.meias.y * self.m.y_axis.dot(eixo).abs()
+            + self.meias.z * self.m.z_axis.dot(eixo).abs()
+    }
+
+    /// Ponto mais distante na direcao dada.
+    fn suporte(&self, direcao: Vec3) -> Vec3 {
+        let meias = self.meias.to_array();
+        let mut ponto = self.centro;
+        for (i, meia) in meias.iter().enumerate() {
+            let eixo = self.m.col(i);
+            let sinal = if eixo.dot(direcao) < 0.0 { -1.0 } else { 1.0 };
+            ponto += eixo * (sinal * meia);
+        }
+        ponto
+    }
+
+    /// Indice do eixo mais alinhado com uma direcao, e o sinal.
+    fn face_na_direcao(&self, direcao: Vec3) -> (usize, f32) {
+        let mut melhor = 0;
+        let mut valor = self.m.x_axis.dot(direcao).abs();
+        for i in 1..3 {
+            let atual = self.m.col(i).dot(direcao).abs();
+            if atual > valor {
+                valor = atual;
+                melhor = i;
+            }
+        }
+        let sinal = if self.m.col(melhor).dot(direcao) < 0.0 { -1.0 } else { 1.0 };
+        (melhor, sinal)
+    }
+
+    /// Os quatro cantos de uma face.
+    fn cantos_da_face(&self, eixo: usize, sinal: f32) -> [Vec3; 4] {
+        let meias = self.meias.to_array();
+        let normal = self.m.col(eixo) * sinal;
+        let centro_da_face = self.centro + normal * meias[eixo];
+
+        let (t1, t2) = ((eixo + 1) % 3, (eixo + 2) % 3);
+        let u = self.m.col(t1) * meias[t1];
+        let v = self.m.col(t2) * meias[t2];
+
+        [
+            centro_da_face - u - v,
+            centro_da_face + u - v,
+            centro_da_face + u + v,
+            centro_da_face - u + v,
+        ]
+    }
+
+    /// Aresta paralela ao eixo dado, no canto mais avancado em `direcao`.
+    fn aresta_de_apoio(&self, eixo: usize, direcao: Vec3) -> (Vec3, Vec3) {
+        let meias = self.meias.to_array();
+        let mut canto = self.centro;
+        for (i, meia) in meias.iter().enumerate() {
+            if i == eixo {
+                continue;
+            }
+            let e = self.m.col(i);
+            let sinal = if e.dot(direcao) < 0.0 { -1.0 } else { 1.0 };
+            canto += e * (sinal * meia);
+        }
+        let metade = self.m.col(eixo) * meias[eixo];
+        (canto - metade, canto + metade)
+    }
+}
+
+/// De onde veio o eixo separador de menor penetracao.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrigemDoEixo {
+    /// Face da primeira caixa, com o indice do eixo local.
+    FaceDeA(usize),
+    /// Face da segunda caixa.
+    FaceDeB(usize),
+    /// Produto vetorial entre uma aresta de cada caixa.
+    Aresta(usize, usize),
+}
+
+/// Eixo de menor penetracao entre duas caixas.
+struct Separacao {
+    /// Direcao unitaria no mundo, apontando de A para B.
+    normal: Vec3,
+    /// Penetracao ao longo dela, nao negativa.
+    profundidade: f32,
+    origem: OrigemDoEixo,
+}
+
+/// Teorema do eixo separador sobre as quinze direcoes candidatas.
+///
+/// Tres faces de cada caixa e os nove produtos vetoriais entre as arestas. Se
+/// alguma separa, nao ha contato; se nenhuma separa, a de menor penetracao e a
+/// saida mais curta.
+fn separacao_entre_caixas(a: CaixaNoMundo, b: CaixaNoMundo) -> Option<Separacao> {
+    let entre_centros = b.centro - a.centro;
+
+    let mut melhor_face: Option<(f32, Vec3, OrigemDoEixo)> = None;
+    let mut melhor_aresta: Option<(f32, Vec3, OrigemDoEixo)> = None;
+
+    // `None` quando o eixo candidato e degenerado: arestas paralelas nao geram
+    // direcao, e o candidato simplesmente nao existe.
+    let avalia = |eixo: Vec3| -> Option<(f32, Vec3)> {
+        let comprimento_quadrado = eixo.length_squared();
+        if comprimento_quadrado <= EPS_COMPRIMENTO_QUADRADO {
+            return None;
+        }
+        let n = eixo / comprimento_quadrado.sqrt();
+        let separacao = entre_centros.dot(n).abs() - (a.alcance(n) + b.alcance(n));
+        let dirigido = if entre_centros.dot(n) < 0.0 { -n } else { n };
+        Some((separacao, dirigido))
+    };
+
+    for i in 0..3 {
+        for (eixo, origem) in
+            [(a.m.col(i), OrigemDoEixo::FaceDeA(i)), (b.m.col(i), OrigemDoEixo::FaceDeB(i))]
+        {
+            let Some((separacao, dirigido)) = avalia(eixo) else { continue };
+            if separacao > 0.0 {
+                return None;
+            }
+            if melhor_face.is_none_or(|(atual, _, _)| separacao > atual) {
+                melhor_face = Some((separacao, dirigido, origem));
+            }
+        }
+    }
+
+    for i in 0..3 {
+        for j in 0..3 {
+            let Some((separacao, dirigido)) = avalia(a.m.col(i).cross(b.m.col(j))) else {
+                continue;
+            };
+            if separacao > 0.0 {
+                return None;
+            }
+            if melhor_aresta.is_none_or(|(atual, _, _)| separacao > atual) {
+                melhor_aresta = Some((separacao, dirigido, OrigemDoEixo::Aresta(i, j)));
+            }
+        }
+    }
+
+    let face = melhor_face?;
+
+    // A aresta so ganha se ganhar com folga: empate numerico fica com a face.
+    let escolhido = match melhor_aresta {
+        Some(aresta) if aresta.0 > face.0 + VANTAGEM_MINIMA_DA_ARESTA => aresta,
+        _ => face,
+    };
+
+    Some(Separacao {
+        normal: escolhido.1,
+        profundidade: (-escolhido.0).max(0.0),
+        origem: escolhido.2,
+    })
+}
+
+/// Recorta um poligono contra o semiespaco `(ponto − origem)·normal ≤ 0`.
+///
+/// Sutherland–Hodgman, uma aresta por vez. Cada corte acrescenta no maximo um
+/// vertice, entao oito posicoes bastam para um quadrilatero contra quatro
+/// planos.
+fn recorta_contra_plano(
+    entrada: &[Vec3],
+    normal: Vec3,
+    origem: Vec3,
+    saida: &mut [Vec3; 8],
+) -> usize {
+    if entrada.is_empty() {
+        return 0;
+    }
+
+    let distancia = |p: Vec3| (p - origem).dot(normal);
+    let mut n = 0;
+
+    for (i, atual) in entrada.iter().enumerate() {
+        let proximo = entrada[(i + 1) % entrada.len()];
+        let (da, db) = (distancia(*atual), distancia(proximo));
+
+        if da <= 0.0 && n < 8 {
+            saida[n] = *atual;
+            n += 1;
+        }
+        // Cruzou o plano: o ponto de corte entra entre os dois.
+        if (da > 0.0) != (db > 0.0) && n < 8 {
+            let t = da / (da - db);
+            saida[n] = *atual + (proximo - *atual) * t;
+            n += 1;
+        }
+    }
+
+    n
+}
+
+/// Manifold de um contato de face: recorta a face incidente contra a de
+/// referencia.
+///
+/// Os pontos saem na superficie da caixa de **referencia**, que e quem faz o
+/// papel de A na [D15](../../../docs/DECISOES.md).
+fn manifold_de_face(
+    referencia: CaixaNoMundo,
+    incidente: CaixaNoMundo,
+    normal: Vec3,
+) -> ([Vec3; MAX_PONTOS], usize) {
+    let (eixo_ref, sinal_ref) = referencia.face_na_direcao(normal);
+    let meias_ref = referencia.meias.to_array();
+
+    // A face incidente e a que mais se opoe a normal.
+    let (eixo_inc, sinal_inc) = incidente.face_na_direcao(-normal);
+    let mut poligono: Vec<Vec3> = incidente.cantos_da_face(eixo_inc, sinal_inc).to_vec();
+
+    // Recorta contra as quatro laterais da face de referencia.
+    let mut buffer = [Vec3::ZERO; 8];
+    for tangente in [(eixo_ref + 1) % 3, (eixo_ref + 2) % 3] {
+        for lado in [1.0_f32, -1.0] {
+            let n_lado = referencia.m.col(tangente) * lado;
+            let origem = referencia.centro + n_lado * meias_ref[tangente];
+            let quantos = recorta_contra_plano(&poligono, n_lado, origem, &mut buffer);
+            poligono = buffer[..quantos].to_vec();
+            if poligono.is_empty() {
+                return ([Vec3::ZERO; MAX_PONTOS], 0);
+            }
+        }
+    }
+
+    // Plano da face de referencia: fica quem estiver abaixo dele.
+    let normal_ref = referencia.m.col(eixo_ref) * sinal_ref;
+    let plano = referencia.centro + normal_ref * meias_ref[eixo_ref];
+
+    let mut candidatos: Vec<(f32, Vec3)> = poligono
+        .iter()
+        .map(|p| ((*p - plano).dot(normal_ref), *p))
+        .filter(|(distancia, _)| *distancia <= TOLERANCIA_COPLANAR)
+        .collect();
+
+    // Os mais fundos primeiro; empate pela ordem canonica, para que o resultado
+    // nao dependa da ordem em que o recorte os produziu.
+    candidatos.sort_by(|x, y| x.0.total_cmp(&y.0).then(ordem_canonica(&x.1, &y.1)));
+
+    let mut pontos = [Vec3::ZERO; MAX_PONTOS];
+    let mut quantidade = 0;
+    for (distancia, ponto) in candidatos {
+        if quantidade == MAX_PONTOS {
+            break;
+        }
+        // Projetado na face de referencia: e la que fica a superficie de A.
+        let na_face = ponto - normal_ref * distancia;
+        let repetido =
+            pontos[..quantidade].iter().any(|q| (*q - na_face).length() <= EPS_SEPARACAO_PONTOS);
+        if repetido {
+            continue;
+        }
+        pontos[quantidade] = na_face;
+        quantidade += 1;
+    }
+
+    (pontos, quantidade)
+}
+
+/// Ponto de contato de um encontro aresta-aresta.
+///
+/// Cada caixa apoia uma aresta paralela ao seu eixo; o contato e onde as duas
+/// passam mais perto. Reaproveita a rotina de segmentos do grupo A.
+fn ponto_de_aresta(
+    a: CaixaNoMundo,
+    eixo_a: usize,
+    b: CaixaNoMundo,
+    eixo_b: usize,
+    normal: Vec3,
+) -> Vec3 {
+    let (a0, a1) = a.aresta_de_apoio(eixo_a, normal);
+    let (b0, b1) = b.aresta_de_apoio(eixo_b, -normal);
+    let proximos = mais_proximos(a0, a1, b0, b1);
+
+    a0 + (a1 - a0) * proximos.s
+}
+
+/// Contato entre duas caixas.
+///
+/// Quinze eixos de separacao, e depois o manifold. Se a menor penetracao vier de
+/// uma face, a face incidente da outra caixa e recortada contra a de referencia
+/// e sobram ate quatro pontos — e disso que depende uma caixa apoiada nao
+/// balancar. Se vier de um encontro aresta-aresta, o contato e um ponto so,
+/// porque e isso que ele geometricamente e.
+#[must_use]
+pub fn caixa_caixa(
+    meias_extensoes_a: Vec3,
+    a: Pose,
+    meias_extensoes_b: Vec3,
+    b: Pose,
+) -> Option<Contato> {
+    let caixa_a = CaixaNoMundo::nova(meias_extensoes_a, a);
+    let caixa_b = CaixaNoMundo::nova(meias_extensoes_b, b);
+
+    let separacao = separacao_entre_caixas(caixa_a, caixa_b)?;
+    let normal = separacao.normal;
+    let profundidade = separacao.profundidade;
+
+    let (pontos, quantidade) = match separacao.origem {
+        OrigemDoEixo::FaceDeA(_) => manifold_de_face(caixa_a, caixa_b, normal),
+        OrigemDoEixo::FaceDeB(_) => {
+            // A referencia e B. Calcula com os papeis trocados e inverte no fim.
+            let (pontos, quantidade) = manifold_de_face(caixa_b, caixa_a, -normal);
+            if quantidade > 0 {
+                let espelhado = Contato::novo(-normal, profundidade, &pontos[..quantidade]);
+                return Some(espelhado.invertido());
+            }
+            (pontos, 0)
+        }
+        OrigemDoEixo::Aresta(i, j) => {
+            let ponto = ponto_de_aresta(caixa_a, i, caixa_b, j, normal);
+            let mut buffer = [Vec3::ZERO; MAX_PONTOS];
+            buffer[0] = ponto;
+            (buffer, 1)
+        }
+    };
+
+    if quantidade == 0 {
+        // O recorte pode sair vazio quando as faces mal se cruzam. O ponto de
+        // apoio de A na direcao da normal continua sendo um ponto da superficie
+        // de A, que e o que a D15 exige.
+        return Some(Contato::novo(normal, profundidade, &[caixa_a.suporte(normal)]));
+    }
+
+    Some(Contato::novo(normal, profundidade, &pontos[..quantidade]))
+}
+
+/// Contato entre duas formas quaisquer.
+///
+/// E a matriz da Fase 5 inteira, num lugar so. Os pares que nao tem
+/// implementacao propria sao resolvidos pelo espelho: `A × B` chama `B × A` e
+/// inverte o resultado, o que preserva a normal e a profundidade e troca os
+/// pontos de superficie — ver [`Contato::invertido`].
+///
+/// # A matriz
+///
+/// | | Esfera | Caixa | Capsula | Plano |
+/// |---|---|---|---|---|
+/// | **Esfera** | fechada | OBB | segmento | semiespaco |
+/// | **Caixa** | espelho | SAT | segmento×OBB | semiespaco |
+/// | **Capsula** | espelho | espelho | segmento | semiespaco |
+/// | **Plano** | espelho | espelho | espelho | **sem contato** |
+///
+/// Dois planos sao o unico par sem contato possivel: dois semiespacos ou nao se
+/// cruzam, ou se cruzam num volume infinito.
+///
+/// O `match` e exaustivo de proposito, sem braco curinga. A [`Forma`] e
+/// `#[non_exhaustive]` para fora da crate, mas aqui dentro nao: acrescentar uma
+/// forma **quebra a compilacao** desta funcao, que e exatamente onde o autor da
+/// forma nova precisa parar para pensar. Um curinga devolvendo `None` trocaria
+/// esse erro por um par que silenciosamente nunca colide.
+#[must_use]
+pub fn contato(forma_a: &Forma, a: Pose, forma_b: &Forma, b: Pose) -> Option<Contato> {
+    use Forma::{Caixa, Capsula, Esfera, Plano};
+
+    match (*forma_a, *forma_b) {
+        (Esfera { raio: ra }, Esfera { raio: rb }) => esfera_esfera(ra, a, rb, b),
+
+        (Esfera { raio: ra }, Capsula { raio: rb, meia_altura: ha }) => {
+            esfera_capsula(ra, a, rb, ha, b)
+        }
+        (Capsula { .. }, Esfera { .. }) => contato(forma_b, b, forma_a, a).map(|c| c.invertido()),
+
+        (Capsula { raio: ra, meia_altura: ha }, Capsula { raio: rb, meia_altura: hb }) => {
+            capsula_capsula(ra, ha, a, rb, hb, b)
+        }
+
+        (Esfera { raio: ra }, Caixa { meias_extensoes: mb }) => esfera_caixa(ra, a, mb, b),
+        (Caixa { .. }, Esfera { .. }) => contato(forma_b, b, forma_a, a).map(|c| c.invertido()),
+
+        (Caixa { meias_extensoes: ma }, Capsula { raio: rb, meia_altura: hb }) => {
+            caixa_capsula(ma, a, rb, hb, b)
+        }
+        (Capsula { .. }, Caixa { .. }) => contato(forma_b, b, forma_a, a).map(|c| c.invertido()),
+
+        (Caixa { meias_extensoes: ma }, Caixa { meias_extensoes: mb }) => caixa_caixa(ma, a, mb, b),
+
+        (Esfera { raio: ra }, Plano { normal: nb }) => esfera_plano(ra, a, nb, b),
+        (Capsula { raio: ra, meia_altura: ha }, Plano { normal: nb }) => {
+            capsula_plano(ra, ha, a, nb, b)
+        }
+        (Caixa { meias_extensoes: ma }, Plano { normal: nb }) => caixa_plano(ma, a, nb, b),
+        (Plano { .. }, Esfera { .. } | Capsula { .. } | Caixa { .. }) => {
+            contato(forma_b, b, forma_a, a).map(|c| c.invertido())
+        }
+
+        (Plano { normal: na }, Plano { normal: nb }) => plano_plano(na, a, nb, b),
+    }
 }
 
 /// Dois semiespacos nunca produzem contato finito.
@@ -1911,6 +2347,349 @@ mod tests {
             recorte_nas_outras_fatias(Vec3::new(-3.0, 0.0, 5.0), Vec3::X * 6.0, Vec3::ONE, 1);
 
         assert_eq!(vazio, None);
+    }
+
+    // ---------------------------------------------------------- caixa x caixa --
+
+    /// Indica se um ponto do mundo esta dentro de uma caixa.
+    fn dentro_da_caixa(ponto: Vec3, meias: Vec3, pose: Pose) -> bool {
+        let m = Mat3::from_quat(pose.rotacao);
+        let local = m.transpose() * (ponto - pose.posicao);
+        local.abs().cmple(meias).all()
+    }
+
+    /// Oraculo grosseiro: alguma amostra do interior de A cai dentro de B?
+    ///
+    /// So vale numa direcao — amostrar pode **perder** uma sobreposicao fina,
+    /// mas nunca inventa uma. Serve para provar que um `None` nao escondeu
+    /// contato.
+    fn alguma_amostra_dentro(meias_a: Vec3, a: Pose, meias_b: Vec3, b: Pose) -> bool {
+        let ma = Mat3::from_quat(a.rotacao);
+        for i in -8i16..=8 {
+            for j in -8i16..=8 {
+                for k in -8i16..=8 {
+                    let fracao = Vec3::new(f32::from(i), f32::from(j), f32::from(k)) / 8.0;
+                    let ponto = a.posicao + ma * (fracao * meias_a);
+                    if dentro_da_caixa(ponto, meias_b, b) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn caixas_separadas_nao_tocam() {
+        let c = caixa_caixa(Vec3::ONE, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::X * 2.5));
+
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn caixas_tangentes_tocam_com_profundidade_zero() {
+        let c = caixa_caixa(Vec3::ONE, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::X * 2.0))
+            .expect("encostar conta");
+        invariantes(&c);
+
+        assert_eq!(c.profundidade(), 0.0);
+        assert!(perto(c.normal(), Vec3::X));
+    }
+
+    #[test]
+    fn caixas_alinhadas_apoiam_a_face_inteira() {
+        // O caso que a D15 existe para suportar.
+        let c = caixa_caixa(Vec3::ONE, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::Y * 1.8))
+            .expect("ha contato");
+        invariantes(&c);
+
+        assert_eq!(c.pontos().len(), 4, "face contra face da quatro pontos");
+        assert!(perto(c.normal(), Vec3::Y));
+        assert!((c.profundidade() - 0.2).abs() < 1e-5, "{}", c.profundidade());
+        for p in c.pontos() {
+            assert!((p.y - 1.0).abs() < 1e-4, "os pontos ficam na face de cima de A: {p}");
+        }
+    }
+
+    #[test]
+    fn a_profundidade_bate_com_a_menor_sobreposicao_de_eixo() {
+        // Oraculo para caixas alinhadas: a penetracao e a menor sobreposicao
+        // entre os tres eixos, e sai sem SAT nenhum.
+        let ha = Vec3::new(1.0, 2.0, 3.0);
+        let hb = Vec3::new(2.0, 1.0, 1.5);
+        for centro in [
+            Vec3::new(2.5, 0.0, 0.0),
+            Vec3::new(0.0, 2.7, 0.0),
+            Vec3::new(0.0, 0.0, 4.2),
+            Vec3::new(1.0, 1.0, 1.0),
+        ] {
+            let c =
+                caixa_caixa(ha, Pose::em(Vec3::ZERO), hb, Pose::em(centro)).expect("ha contato");
+
+            let sobreposicao = (ha + hb) - centro.abs();
+            let esperada = sobreposicao.min_element();
+
+            assert!(
+                (c.profundidade() - esperada).abs() < 1e-5,
+                "centro {centro}: {} != {esperada}",
+                c.profundidade()
+            );
+        }
+    }
+
+    #[test]
+    fn uma_caixa_dentro_da_outra() {
+        let c = caixa_caixa(
+            Vec3::splat(5.0),
+            Pose::em(Vec3::ZERO),
+            Vec3::splat(0.5),
+            Pose::em(Vec3::ZERO),
+        )
+        .expect("ha contato");
+        invariantes(&c);
+
+        assert!((c.profundidade() - 5.5).abs() < 1e-5, "{}", c.profundidade());
+    }
+
+    #[test]
+    fn meia_volta_nao_muda_o_contato() {
+        // Meia volta em Y e exata em f32, e leva a caixa nela mesma.
+        let reta = caixa_caixa(Vec3::ONE, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::X * 1.5))
+            .expect("ha contato");
+        let girada = caixa_caixa(
+            Vec3::ONE,
+            Pose::em(Vec3::ZERO),
+            Vec3::ONE,
+            Pose::nova(Vec3::X * 1.5, MEIA_VOLTA_Y),
+        )
+        .expect("ha contato");
+
+        assert_eq!(reta.normal(), girada.normal());
+        assert_eq!(reta.profundidade(), girada.profundidade());
+    }
+
+    #[test]
+    fn um_quarto_de_volta_continua_face_contra_face() {
+        let c = caixa_caixa(
+            Vec3::ONE,
+            Pose::em(Vec3::ZERO),
+            Vec3::new(1.0, 1.0, 3.0),
+            Pose::nova(Vec3::Y * 1.8, QUARTO_Y),
+        )
+        .expect("ha contato");
+        invariantes(&c);
+
+        assert!(perto(c.normal(), Vec3::Y));
+        assert_eq!(c.pontos().len(), 4, "as faces continuam paralelas");
+    }
+
+    #[test]
+    fn rotacao_nao_trivial_ainda_produz_contato_valido() {
+        let meio_quarto = Quat::from_xyzw(0.0, 0.382_683_43, 0.0, 0.923_879_5);
+        let c = caixa_caixa(
+            Vec3::ONE,
+            Pose::em(Vec3::ZERO),
+            Vec3::ONE,
+            Pose::nova(Vec3::X * 2.0, meio_quarto),
+        )
+        .expect("ha contato");
+        invariantes(&c);
+
+        // Girada 45 graus, a caixa avanca ate 1,414 em X, entao penetra 0,414.
+        assert!(c.profundidade() > 0.3, "{}", c.profundidade());
+        assert!(perto(c.normal(), Vec3::X));
+    }
+
+    #[test]
+    fn separacao_por_face_de_a() {
+        // Afastadas ao longo de um eixo de A, sem rotacao em B.
+        let c = caixa_caixa(
+            Vec3::new(1.0, 5.0, 5.0),
+            Pose::em(Vec3::ZERO),
+            Vec3::new(1.0, 5.0, 5.0),
+            Pose::em(Vec3::X * 2.2),
+        );
+
+        assert_eq!(c, None);
+    }
+
+    #[test]
+    fn separacao_por_face_de_b() {
+        // B girada: a folga so aparece projetando no eixo local dela.
+        let b = Pose::nova(Vec3::new(3.2, 0.0, 0.0), QUARTO_Y);
+        let c = caixa_caixa(Vec3::new(1.0, 1.0, 3.0), Pose::em(Vec3::ZERO), Vec3::ONE, b);
+
+        assert_eq!(c, None);
+        assert!(!alguma_amostra_dentro(
+            Vec3::new(1.0, 1.0, 3.0),
+            Pose::em(Vec3::ZERO),
+            Vec3::ONE,
+            b
+        ));
+    }
+
+    #[test]
+    fn o_none_nunca_esconde_sobreposicao() {
+        // Varre poses; sempre que a funcao disser "sem contato", nenhuma amostra
+        // do interior de uma pode estar dentro da outra.
+        let meio_quarto = Quat::from_xyzw(0.0, 0.382_683_43, 0.0, 0.923_879_5);
+        let ha = Vec3::new(1.0, 0.5, 2.0);
+        let hb = Vec3::new(0.7, 1.5, 0.7);
+
+        for passo in 0..24u16 {
+            let d = 1.0 + f32::from(passo) * 0.25;
+            let b = Pose::nova(Vec3::new(d, d * 0.3, -d * 0.2), meio_quarto);
+
+            if caixa_caixa(ha, Pose::em(Vec3::ZERO), hb, b).is_none() {
+                assert!(
+                    !alguma_amostra_dentro(ha, Pose::em(Vec3::ZERO), hb, b),
+                    "disse sem contato com d={d}, mas ha ponto de A dentro de B"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn os_pontos_ficam_na_superficie_de_a() {
+        // Propriedade da D15: todo ponto do manifold pertence a fronteira de A.
+        let ha = Vec3::new(1.0, 2.0, 1.5);
+        let c = caixa_caixa(ha, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::Y * 2.7))
+            .expect("ha contato");
+
+        for p in c.pontos() {
+            let local = *p;
+            let folga = ha - local.abs();
+            assert!(folga.min_element() > -1e-3, "ponto fora da caixa A: {p} (folga {folga})");
+            assert!(
+                folga.min_element() < 1e-3,
+                "ponto no interior, e nao na superficie: {p} (folga {folga})"
+            );
+        }
+    }
+
+    #[test]
+    fn caixas_sao_simetricas() {
+        let a = Pose::em(Vec3::ZERO);
+        let b = Pose::em(Vec3::new(1.4, 0.3, 0.0));
+        let ha = Vec3::new(1.0, 2.0, 1.0);
+        let hb = Vec3::new(1.0, 1.0, 2.0);
+
+        let direto = caixa_caixa(ha, a, hb, b).expect("ha contato");
+        let inverso = caixa_caixa(hb, b, ha, a).expect("ha contato").invertido();
+
+        assert!(
+            perto(direto.normal(), inverso.normal()),
+            "{} vs {}",
+            direto.normal(),
+            inverso.normal()
+        );
+        assert!((direto.profundidade() - inverso.profundidade()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn caixa_caixa_e_deterministica() {
+        let meio_quarto = Quat::from_xyzw(0.0, 0.382_683_43, 0.0, 0.923_879_5);
+        let caso = || {
+            (
+                caixa_caixa(Vec3::ONE, Pose::em(Vec3::ZERO), Vec3::ONE, Pose::em(Vec3::Y * 1.8)),
+                caixa_caixa(
+                    Vec3::ONE,
+                    Pose::em(Vec3::ZERO),
+                    Vec3::ONE,
+                    Pose::nova(Vec3::X * 2.0, meio_quarto),
+                ),
+            )
+        };
+
+        assert_eq!(caso(), caso());
+    }
+
+    // ------------------------------------------------------------- despacho --
+
+    #[test]
+    fn o_despacho_cobre_a_matriz_inteira() {
+        // Cenas montadas para que cada par produza contato, menos plano x plano.
+        let esfera = Forma::Esfera { raio: 1.0 };
+        let caixa = Forma::Caixa { meias_extensoes: Vec3::ONE };
+        let capsula = Forma::Capsula { raio: 0.5, meia_altura: 1.0 };
+        let plano = Forma::Plano { normal: Vec3::Y };
+
+        let origem = Pose::em(Vec3::ZERO);
+        let perto_de_cima = Pose::em(Vec3::Y * 1.2);
+        // Contra o plano a folga e menor: um corpo a 1,2 de altura nao alcanca
+        // a superficie com raio 1.
+        let sobre_o_plano = Pose::em(Vec3::Y * 0.8);
+
+        let formas = [esfera, caixa, capsula];
+        for fa in formas {
+            for fb in formas {
+                let c = contato(&fa, origem, &fb, perto_de_cima);
+                assert!(c.is_some(), "{fa:?} contra {fb:?} deveria tocar");
+                invariantes(&c.expect("ha contato"));
+            }
+            // Contra o plano, nos dois sentidos.
+            assert!(contato(&fa, sobre_o_plano, &plano, origem).is_some(), "{fa:?} x plano");
+            assert!(contato(&plano, origem, &fa, sobre_o_plano).is_some(), "plano x {fa:?}");
+        }
+
+        assert_eq!(contato(&plano, origem, &plano, Pose::em(Vec3::Y)), None);
+    }
+
+    #[test]
+    fn o_despacho_e_simetrico_em_toda_a_matriz() {
+        let formas = [
+            Forma::Esfera { raio: 1.0 },
+            Forma::Caixa { meias_extensoes: Vec3::ONE },
+            Forma::Capsula { raio: 0.5, meia_altura: 1.0 },
+            Forma::Plano { normal: Vec3::Y },
+        ];
+        let a = Pose::em(Vec3::ZERO);
+        // Deslocada tambem em X: corpos exatamente concentricos ou colineares
+        // formam uma configuracao simetrica sob troca, e ali nenhuma direcao
+        // derivavel da entrada inverte — ver `direcao_entre_centros`.
+        let b = Pose::em(Vec3::new(0.6, 0.9, 0.0));
+
+        for fa in formas {
+            for fb in formas {
+                let direto = contato(&fa, a, &fb, b);
+                let espelho = contato(&fb, b, &fa, a).map(|c| c.invertido());
+
+                match (direto, espelho) {
+                    (None, None) => {}
+                    (Some(d), Some(e)) => {
+                        assert!(
+                            perto(d.normal(), e.normal()),
+                            "{fa:?} x {fb:?}: normal {} vs {}",
+                            d.normal(),
+                            e.normal()
+                        );
+                        assert!(
+                            (d.profundidade() - e.profundidade()).abs() < 1e-4,
+                            "{fa:?} x {fb:?}: profundidade {} vs {}",
+                            d.profundidade(),
+                            e.profundidade()
+                        );
+                    }
+                    _ => panic!("{fa:?} x {fb:?}: um lado viu contato e o outro nao"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn o_despacho_devolve_nada_quando_estao_longe() {
+        let formas = [
+            Forma::Esfera { raio: 1.0 },
+            Forma::Caixa { meias_extensoes: Vec3::ONE },
+            Forma::Capsula { raio: 0.5, meia_altura: 1.0 },
+        ];
+        let longe = Pose::em(Vec3::X * 100.0);
+
+        for fa in formas {
+            for fb in formas {
+                assert_eq!(contato(&fa, Pose::em(Vec3::ZERO), &fb, longe), None, "{fa:?} x {fb:?}");
+            }
+        }
     }
 
     // --------------------------------------------------------- plano x plano --

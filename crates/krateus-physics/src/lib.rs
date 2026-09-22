@@ -13,7 +13,7 @@
 //! - [`integrador`] — integrador semi-implicito com gravidade, forcas e impulsos
 //! - [`forma`] — formas de colisao e o volume envolvente que a broadphase indexa
 //! - [`broadphase`] — sweep and prune em lote, e o `Colisor` que liga entidade a forma
-//! - [`contato`] — narrowphase: existe contato, e qual e a sua geometria
+//! - [`contato`] — narrowphase completa: os dez pares da matriz da Fase 5
 //!
 //! Faltam resolucao de contato, raycast, character controller e os gizmos de
 //! debug. Os gizmos dependem do renderer; o resto, nao.
@@ -32,8 +32,8 @@ pub mod trajetoria;
 
 pub use broadphase::{Colisor, Eixo, eixo_de_maior_variancia, envelopes, pares, pares_com_planos};
 pub use contato::{
-    Contato, MAX_PONTOS, Pose, caixa_capsula, caixa_plano, capsula_capsula, capsula_plano,
-    esfera_caixa, esfera_capsula, esfera_esfera, esfera_plano, plano_plano,
+    Contato, MAX_PONTOS, Pose, caixa_caixa, caixa_capsula, caixa_plano, capsula_capsula,
+    capsula_plano, contato, esfera_caixa, esfera_capsula, esfera_esfera, esfera_plano, plano_plano,
 };
 pub use forma::{Aabb, Forma};
 pub use integrador::{

@@ -17,15 +17,18 @@ enquanto ainda são baratas de mudar.
 
 ---
 
-## Onde o trabalho parou — 2026-09-07
+## Onde o trabalho está — 2026-09-22
 
-Desenvolvimento **pausado por decisão**, não por dificuldade. A Fase 2 está
-completa e verificada; a Fase 3 tem o que não depende de GPU, e o restante está
-bloqueado pelo ambiente.
+**O bloqueio de ambiente acabou.** O Smart App Control foi desativado, e com ele
+caiu o [R01](RISCOS.md): a compilação local voltou, e o critério de aceite da
+Fase 3 — que exige GPU nesta máquina — deixou de ser inverificável.
 
-A pausa foi aberta uma vez, para a **Fase 5**: a ferramenta de balística do §6 e
-o integrador são CPU pura, com critério de aceite verificável sem tela. Ver
-"Fase 5" abaixo para o recorte exato do que existe e do que não existe.
+Enquanto o bloqueio valeu, a **Fase 5** avançou fora de ordem, por ser a única
+que não pedia tela. Ela chegou até o fim da cadeia de colisão geométrica; falta a
+resolução física. Ver "Fase 5" abaixo.
+
+**A Fase 3 é o próximo passo natural**, por ser a mais antiga em aberto e por ter
+sido ela, e não outra, o que o ambiente impedia.
 
 ### O que existe e funciona
 
@@ -36,7 +39,7 @@ o integrador são CPU pura, com critério de aceite verificável sem tela. Ver
 | `krateus-simulation` | laço de timestep fixo + teste de determinismo cross-platform |
 | `krateus-rhi` | vocabulário mínimo + backend nulo que valida o contrato ([D12](DECISOES.md) — experimental) |
 | `krateus-render` | Render World completo: `extract` → `prepare` → `queue` → `render` |
-| `krateus-physics` | integrador semi-implícito e ferramenta de trajetória — **início** da Fase 5 |
+| `krateus-physics` | integrador, trajetória, formas, broadphase e narrowphase completa — Fase 5 até o contato |
 
 A fronteira **ECS → Render World → RHI** está validada de ponta a ponta em CPU,
 com teste de integração que vai do mundo lógico ao comando de GPU sem janela.
@@ -285,20 +288,40 @@ que a separação paga.
 - Solver determinístico: mesmo input, mesmo resultado, cross-platform
 - Trajetória analítica e integrada convergem dentro de tolerância
 
-**Estado em 2026-09-07 — começada fora de ordem, sem GPU**
+**Estado em 2026-09-22 — começada fora de ordem, e parada no contato**
 
 | Entregável | Estado |
 |---|---|
 | Integrador semi-implícito; gravidade, forças, impulsos | ✅ `integrador.rs` |
 | Ferramenta de trajetória (§6) | ✅ `trajetoria.rs` |
 | Níveis de fidelidade — analítico, integrado, com arrasto | ✅ `Fidelidade` |
-| Shapes, broadphase, narrowphase, contato | ⬜ |
+| Shapes: esfera, AABB/OBB, cápsula, plano | ✅ `forma.rs` ([D14](DECISOES.md)) |
+| Broadphase | ✅ `broadphase.rs` — SAP em lote, e passada própria de planos ([D16](DECISOES.md)) |
+| Narrowphase | ✅ `contato.rs` — os dez pares da matriz ([D15](DECISOES.md)) |
+| **Resolução de contato** | ⬜ é onde a fase para |
 | Raycast, sweep, triggers, character controller, projéteis | ⬜ |
 | Gizmos de debug | ⬜ depende do renderer |
 
-Dos quatro critérios de aceite, dois já são verificáveis e estão cobertos —
-conservação de energia num oscilador e convergência entre analítica e integrada.
-Os outros dois dependem de resolução de contato, que não existe.
+A narrowphase cobre a matriz inteira: esfera, cápsula e as duas entre si pelo
+núcleo inflado; as três formas finitas contra o semiespaço; esfera × caixa pelo
+ponto mais próximo na OBB; caixa × cápsula por distância fechada, com SAT quando
+o segmento atravessa; e caixa × caixa por SAT de quinze eixos com clipping de
+face. Plano × plano é o único par sem contato possível.
+
+**Dos quatro critérios de aceite, dois estão cobertos** — conservação de energia
+num oscilador e convergência entre analítica e integrada. Os outros dois não, e é
+importante ser exato sobre o porquê:
+
+- *"Pilha de 100 caixas estável por 60 s"* depende de **duas** coisas que não
+  existem: o solver, e dinâmica angular. Não há componente de rotação na física
+  porque não há torque nem tensor de inércia. O manifold de quatro pontos que a
+  [D15](DECISOES.md) exige está pronto e é pré-requisito disso, mas sozinho não
+  chega lá.
+- *"Solver determinístico"* não tem solver para testar.
+
+Uma consequência disso vale registro: **caixas no mundo são sempre alinhadas aos
+eixos hoje.** O caminho da OBB girada existe, está testado em `forma.rs` e em
+`contato.rs`, mas o ECS não produz rotação para exercitá-lo.
 
 O integrador não reusa o `Transform` de `krateus-render`: define `Posicao`
 própria. Não é só evitar dependência na direção errada — o renderer precisa de

@@ -462,3 +462,105 @@ envelope para todas as formas.
 
 O custo cresce com o que se apoiar nelas. A revisão barata é agora; depois da
 broadphase e do solver, não é mais.
+
+---
+
+## D15 — Representação do contato: manifold com normal e profundidade únicas
+
+**Decisão.** A narrowphase devolve, para cada par, ou nenhum contato, ou um
+`Contato` com **uma** normal, **uma** profundidade e **até quatro** pontos.
+
+### As quatro convenções
+
+1. **A normal aponta de A para B**, é unitária, e mover B por
+   `normal * profundidade` separa os corpos.
+2. **A profundidade é sempre ≥ 0** quando há contato. Tangência exata é contato
+   com profundidade zero — a mesma regra de `Aabb::sobrepoe`, onde encostar
+   conta.
+3. **Os pontos ficam na superfície de A**, e são os pontos de A mais fundos
+   dentro de B.
+4. **O ponto correspondente em B é `ponto − normal * profundidade`.**
+
+### Por que o sinal é `−` e não `+`
+
+A proposta original desta decisão trazia `+`, e estava errada. A derivação, com
+duas esferas de raio 1 em `cA = (0,0,0)` e `cB = (1,5, 0, 0)`:
+
+- normal de A para B: `n = (1,0,0)`; profundidade: `1 + 1 − 1,5 = 0,5`
+- ponto de A mais fundo em B: `cA + n·rA = (1, 0, 0)`
+- ponto de B mais fundo em A: `cB − n·rB = (0,5, 0, 0)`
+- diferença: `pA − pB = n · 0,5 = normal · profundidade`
+
+Portanto `pB = pA − normal · profundidade`. Com `+`, o ponto em B cairia do lado
+oposto do corpo. O registro fica aqui, e não só no código, porque é a diferença
+entre um solver que separa e um que atravessa.
+
+### Por que manifold, e não um ponto só
+
+O critério de aceite da Fase 5 é *"pilha de 100 caixas estável por 60 s sem
+afundar"*. Uma caixa apoiada por um único ponto balança: o solver não tem como
+resistir ao torque. Uma face apoiada precisa dos quatro cantos, e é daí que sai
+o limite de quatro — é o que a face de uma caixa exige, e nada na matriz de
+formas exige mais.
+
+A palavra "manifold" não aparece no roadmap. A necessidade vem do critério de
+aceite, e é ela que decide que Caixa × Caixa precisa de clipping em vez de um
+único ponto de menor penetração.
+
+### Uma profundidade para o manifold inteiro
+
+Todos os pontos de um contato compartilham normal e profundidade. Isso só é
+coerente porque os pontos que entram no manifold são os que estão à mesma
+profundidade dentro de uma tolerância de coplanaridade: uma caixa inclinada
+apoia um vértice, não uma face, e nesse caso o manifold tem um ponto só.
+
+O custo conhecido: um solver futuro pode preferir profundidade por ponto, ou
+manifolds persistentes entre quadros. Nenhum dos dois se projeta agora, porque
+não há solver que exerça a diferença.
+
+### Ordenação canônica
+
+Os pontos são ordenados por `total_cmp` em x, depois y, depois z. Sem isso,
+`contato(A, B)` e `contato(B, A)` poderiam produzir os mesmos pontos em ordens
+diferentes, e a comparação entre eles deixaria de ser igualdade. Como todos os
+pontos sofrem a mesma translação ao inverter, a ordenação sobrevive à inversão.
+
+**Custo de reversão.** Médio. Trocar as convenções depois que houver solver
+significa revisar cada algoritmo da narrowphase e o solver junto — por isso a
+decisão vem antes do código, e por isso o sinal foi conferido por derivação.
+
+---
+
+## D16 — Planos entram no pipeline por uma passada própria
+
+**Decisão.** Um `Colisor` com `Forma::Plano` **não participa da broadphase**. Os
+pares que envolvem plano são gerados por uma passada explícita e separada, cada
+plano contra cada corpo não-plano.
+
+### Por quê
+
+A [D14](#d14--como-as-formas-de-colisão-são-representadas) estabeleceu que um
+semiespaço não tem envelope finito, e que `Forma::aabb` devolve `None` para ele.
+A consequência, encontrada ao projetar a narrowphase: `envelopes` nunca emite um
+par com plano, e portanto **as quatro combinações com plano seriam inalcançáveis**
+— código correto e morto.
+
+Dar ao plano uma AABB infinita resolveria e destruiria a broadphase: um envelope
+infinito se sobrepõe a todos os pares, e o sweep and prune viraria força bruta.
+
+### Por que uma passada separada, e não uma exceção dentro do SAP
+
+Enfiar o caso do plano dentro da varredura significaria um ramo especial no laço
+mais interno, uma exceção escondida numa função que hoje é pura e tem um oráculo
+de força bruta. A passada separada mantém `pares` intocada — mesmo contrato,
+mesmos testes — e deixa o custo do plano visível onde ele acontece.
+
+O custo é `O(planos × corpos)`, e se justifica porque planos são poucos: o chão,
+as paredes de uma arena. Se um dia um cenário tiver muitos, a conta muda e a
+decisão volta.
+
+Pares plano × plano não são gerados: pela [D15](#d15--representação-do-contato-manifold-com-normal-e-profundidade-únicas)
+não existe contato finito entre dois semiespaços.
+
+**Custo de reversão.** Baixo. É uma função a mais na geração de pares, com saída
+no mesmo formato canônico da broadphase; quem consome não distingue a origem.

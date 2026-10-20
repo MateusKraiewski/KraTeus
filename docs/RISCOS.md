@@ -7,8 +7,8 @@ for eliminado ou aceito de forma explicita, com a decisao registrada.
 
 ## R01 — Smart App Control bloqueia binarios de desenvolvimento
 
-**Status:** aberto — bloqueante para a Fase 3; vias de autorizacao administrada
-testadas e descartadas em 2026-09-04
+**Status:** fechado em 2026-09-22 — Smart App Control desativado pelo
+responsavel pela maquina, aceitando que e irreversivel sem reinstalar o Windows
 **Registrado em:** 2026-09-03
 **Detalhe tecnico completo:** [AMBIENTE.md](AMBIENTE.md)
 
@@ -187,6 +187,38 @@ localmente, de nenhuma forma. O CI passou de autoridade a **única** forma de
 compilar o projeto. Isso é viável — o CI é completo e roda nas duas plataformas —
 mas o ciclo de retorno passou de segundos a minutos, e erros de compilação e de
 formatação só aparecem depois de um push.
+
+### Resolvido em 2026-09-22 — Smart App Control desativado
+
+O responsável pela máquina desativou o Smart App Control. É a **opção 1** do
+levantamento de 2026-09-04, com o custo que aquele registro já nomeava:
+**irreversível sem reinstalar o Windows.**
+
+Verificado na mesma data, e não presumido:
+
+| Comando | Resultado |
+|---|---|
+| `rustc --version` | 1.98.1 |
+| `cargo fmt --all -- --check` | limpo |
+| `cargo clippy --workspace --all-targets --all-features` com `-D warnings` | limpo |
+| `cargo test --workspace` | 491 testes, 29 suítes, nenhuma falha |
+
+**O que isso desbloqueia.** Primeiro, o laço local de verificação: compilar,
+formatar, lintar e testar em segundos em vez de num ciclo de CI. Segundo, e mais
+importante, o critério de aceite da Fase 3 — *"triângulo colorido na tela, com
+resize e alt-tab estáveis"* —, que exige rodar um executável com acesso à GPU
+local e por isso nunca foi verificável por CI.
+
+**O que não muda.** O CI continua sendo a autoridade entre plataformas: o
+determinismo cross-platform e a compilação em Linux só se verificam lá. O laço
+local acelera; não substitui.
+
+**Registro de custo, para memória.** Enquanto o bloqueio valeu, seis incidentes
+de formatação chegaram ao CI, cada um com causa distinta, porque modelar o
+`rustfmt` por aproximação não converge. Os defeitos de aritmética geométrica
+foram apanhados por oráculos independentes escritos para isso — esses valeram a
+pena e ficam. Os detectores de formatação não têm mais função e não precisam ser
+mantidos.
 
 ---
 

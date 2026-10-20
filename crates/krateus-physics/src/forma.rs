@@ -189,6 +189,17 @@ impl Forma {
         }
     }
 
+    /// Indica se a forma e um semiespaco.
+    ///
+    /// Quem pergunta e a geracao de pares: pela
+    /// [D16](../../../docs/DECISOES.md), planos nao passam pela broadphase e
+    /// entram por uma passada propria. O metodo vive aqui, e nao la, porque ser
+    /// ou nao um semiespaco e propriedade da forma.
+    #[must_use]
+    pub fn e_plano(&self) -> bool {
+        matches!(self, Self::Plano { .. })
+    }
+
     /// Indica se um ponto **ja em espaco local** pertence ao solido.
     ///
     /// A fronteira conta como dentro, pelo mesmo motivo de
@@ -450,6 +461,14 @@ mod tests {
         // O canto de uma caixa de mesmas dimensoes fica de fora: e a diferenca
         // entre capsula e caixa.
         assert!(!f.contem_ponto_local(Vec3::new(0.5, 1.5, 0.0)));
+    }
+
+    #[test]
+    fn e_plano_reconhece_apenas_o_semiespaco() {
+        assert!(Forma::Plano { normal: Vec3::Y }.e_plano());
+        assert!(!Forma::Esfera { raio: 1.0 }.e_plano());
+        assert!(!Forma::Caixa { meias_extensoes: Vec3::ONE }.e_plano());
+        assert!(!Forma::Capsula { raio: 1.0, meia_altura: 1.0 }.e_plano());
     }
 
     #[test]
